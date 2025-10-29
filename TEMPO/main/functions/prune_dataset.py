@@ -1,7 +1,7 @@
 #### prune_dataset.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2025-04-24
+# Last changed: 2025-10-15
 # Location: Signal_Derived_Retrieval/TEMPO/main/functions
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -16,7 +16,7 @@ def prune_dataset(scan_ds: xr.Dataset, update_modes: tuple, remove_originals=Tru
     Parameters
     ----------
     scan_ds : xr.Dataset
-        Finalized TEMPO dataset from BEHR-RED workflow
+        Finalized TEMPO dataset from SDR workflow
     update_modes : tuple
         List of update modes to identify as profile variable names 
     remove_originals : bool (Optional)

@@ -70,6 +70,7 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
     from functions.boundary_layer_index import boundary_layer_index
     from functions.a_priori_division import a_priori_division
     from functions.group_shared_priors import group_shared_priors
+    from functions.set_quality_flags import set_quality_flags
     from functions.great_circle_distance import great_circle_distance
     from functions.prepare_for_update import prepare_for_update
     from functions.amf_recursive_update_sf import amf_recursive_update
@@ -607,6 +608,19 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
 
         scan_ds = group_shared_priors(scan_ds)
 
+        #################################
+        #### Set Pixel Quality Flags ####
+        #################################
+
+        if verbosity > 2:
+            print('Setting pixel quality flags')
+
+        
+        for mode in update_modes:
+            if verbosity > 2:
+                print('----> {}'.format(mode))
+
+            scan_ds = set_quality_flags(scan_ds, mode)
 
         ############################################
         #### Run amf_recursive_update algorithm ####
@@ -646,7 +660,6 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
             coverage_of_model_pixel = np.full(flat_shape_update_invariant, np.nan, dtype=float)
             proportion_free_troposphere = np.full(flat_shape_update_invariant, np.nan, dtype=float)
             removed_free_troposphere_in_practice = np.full(flat_shape, np.nan, dtype=float)
-            update_quality_flags = np.full(flat_shape_update_invariant, 0, dtype=int)
             no2_boundary_layer_prior_updated = np.full(flat_shape, np.nan, dtype=float)
             retrieved_over_apriori_gridcell_arr = np.full(flat_shape_update_invariant, np.nan, dtype=float)
             retrieved_model_mismatch_flag_arr = np.full(flat_shape_update_invariant, -9999, dtype=int)
@@ -687,18 +700,7 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
 
                             # Prepare information for recursive update
                             # The dimension match arrays are updated to remove any pixels with critical issues (i.e. missing AMF or VCD)
-                            aru_args, ms_match_filt, xt_match_filt, quality_df = prepare_for_update(scan_ds, prior_match_condition, ms_match, xt_match, n_swt_levels, N_updates, sw_var)
-
-                            ## Quality flags (bit-array)
-                            # Flip so that the most severe issues are at the earlier bit positions 
-                            quality_df = quality_df[quality_df.columns[::-1]]
-
-                            bit_sign_series = pd.Series(np.tile('0b', len(quality_df)), dtype=str)
-                            quality_series = bit_sign_series.str.cat(quality_df)
-                            quality_series_int = quality_series.apply(lambda x: int(x, 2))
-
-                            for p in range(len(ms_match)):
-                                update_quality_flags[ms_match[p], xt_match[p]] = quality_series_int.loc[p]
+                            aru_args, ms_match_filt, xt_match_filt = prepare_for_update(scan_ds, prior_match_condition, ms_match, xt_match, n_swt_levels, N_updates, sw_var, "update_quality_flags_{}".format(mode))
 
                             ########################
                             # Perform the AMF update
@@ -833,16 +835,6 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
                                                                 {
                                                                     'units': 'molecules/cm^2',
                                                                     'description': 'vertical column density removed as the free tropospheric portion during the spatial shape-factor calculation'
-                                                                }
-            )
-
-            scan_ds['update_quality_flags_{}'.format(mode)] = (
-                                                                ['mirror_step', 'xtrack'],
-                                                                update_quality_flags,
-                                                                {
-                                                                    'description': 'bit flag indicating quality of pixel for update algorithm',
-                                                                    'bit_positions': np.flip(np.arange(quality_df.shape[1])),
-                                                                    'bit_meanings': list(quality_df.columns)
                                                                 }
             )
 

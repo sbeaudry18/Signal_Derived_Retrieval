@@ -1,7 +1,7 @@
 #### amf_update_one_scan_par_script.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2025-10-05
+# Last changed: 2025-10-15
 # Location: Signal_Derived_Retrieval/TEMPO/main
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -1027,6 +1027,75 @@ try:
                                             }
     )    
 
+    #################################
+    #### Set Pixel Quality Flags ####
+    #################################
+
+    # The only part of this function that is not already vectorized
+    # is the test calculation of the AMF
+    # Parallelize that part but carry out the rest as usual
+
+    from functions.set_quality_flags import set_quality_flags
+
+    if verbosity > 2:
+        print('Setting pixel quality flags')
+
+    
+    for mode in update_modes:
+        if verbosity > 2:
+            print('----> {}'.format(mode))
+
+        # Set the scattering_weight variable
+        if mode == "Standard":
+            sw_var = 'scattering_weights'
+            scattering_weights = scan_ds[sw_var].data
+
+            # SB 2025-03-25: My read of the TEMPO PUM is that the provided scattering weights do not
+            # include the temperature correction factors. As of this date, the calculation of custom
+            # scattering weights already incorporates the temperature factors. Add them in for the 
+            # standard mode here
+            temperature_corrections = scan_ds['TemperatureCorrection'].data
+            scattering_weights *= temperature_corrections
+
+        else:
+            sw_var = 'ScatteringWeightsIPA_{}'.format(mode)
+            scattering_weights = scan_ds[sw_var].data
+
+        dview.scatter('scattering_weights', scattering_weights.reshape((scan_ds.geoscf_tropopause_layer_index.size, 72)))
+
+        def nonzero_amf_check_loop():
+            import numpy as np
+
+            trop_index_known = geoscf_tropopause_layer_index > 0
+            scattering_weights_good = ~np.any(np.isnan(scattering_weights), axis=1)
+
+            nonzero_amf_calc = np.array([], dtype=bool)
+
+            for pi in range(geoscf_tropopause_layer_index.size):
+                if trop_index_known[pi] & scattering_weights_good[pi]:
+                    trop = geoscf_tropopause_layer_index[pi]
+                    m = scattering_weights[pi, :trop+1]
+                    v = gas_profile[pi, :trop+1]
+
+                    numerator = np.sum(m * v)
+                    denominator = np.sum(v)
+                    calculated_amf = numerator / denominator
+                    if calculated_amf > 0:
+                        nonzero_amf_calc = np.append(nonzero_amf_calc, True)
+
+                    else:
+                        nonzero_amf_calc = np.append(nonzero_amf_calc, False)
+                else:
+                    nonzero_amf_calc = np.append(nonzero_amf_calc, False)
+
+            return nonzero_amf_calc
+        
+        nonzero_amf_calc = dview.apply_sync(nonzero_amf_check_loop)
+        nonzero_amf_calc = np.concatenate(nonzero_amf_calc) # no need to reshape
+        # since set_quality_flags is expecting this to be 1D
+
+        # Now just call the normal function with the precalculated values for nonzero_amf_calc
+        scan_ds = set_quality_flags(scan_ds, mode, nonzero_amf_calc)
 
     ##########################
     #### Clean up Engines ####
@@ -1051,6 +1120,9 @@ try:
     dview.execute('del geoscf_tropopause_layer_index')
     dview.execute('del gas_profile')
     dview.execute('del boundary_layer_index')
+
+    # From setting quality flags
+    dview.execute('del scattering_weights')
 
 
     ############################################
@@ -1083,7 +1155,7 @@ try:
         coverage_of_model_pixel = np.full(flat_shape_update_invariant, np.nan, dtype=float)
         proportion_free_troposphere = np.full(flat_shape_update_invariant, np.nan, dtype=float)
         removed_free_troposphere_in_practice = np.full(flat_shape, np.nan, dtype=float)
-        update_quality_flags = np.full(flat_shape_update_invariant, 0, dtype=int)
+        update_quality_flags = np.full(flat_shape_update_invariant, 2**31, dtype=int) # use last position of 32-bit int as fill value
         no2_boundary_layer_prior_updated = np.full(flat_shape, np.nan, dtype=float)
         retrieved_over_apriori_gridcell_arr = np.full(flat_shape_update_invariant, np.nan, dtype=float)
         retrieved_model_mismatch_flag_arr = np.full(flat_shape_update_invariant, -9999, dtype=int)
@@ -1238,6 +1310,8 @@ try:
 
                     # Collect results for this subset
                     subset_results = {}
+                    subset_results['ms_match'] = ms_match
+                    subset_results['xt_match'] = xt_match
                     subset_results['ms_match_filt'] = ms_match_filt
                     subset_results['xt_match_filt'] = xt_match_filt
                     subset_results['update_quality_flags'] = update_quality_flags
@@ -1276,12 +1350,19 @@ try:
                 subset_results = subset_results_list[i_subset] # dict
 
                 # Reconstruct data into the [mirror_step, xtrack] format
+                # Most of the variables use "ms_match_filt" which only includes calculation quality pixels
+                # However, the update_quality_flags variable uses "ms_match" so loop over that seperately
+                for p in range(len(subset_results['ms_match'])):
+                    ms = subset_results['ms_match'][p]
+                    xt = subset_results['xt_match'][p]
+                    update_quality_flags[ms, xt] = subset_results['update_quality_flags'][p]
+
+                # Now go through the variables for calculation quality pixels
                 for p in range(len(subset_results['ms_match_filt'])):
                     ms = subset_results['ms_match_filt'][p]
                     xt = subset_results['xt_match_filt'][p]
                     
                     # Assign values to final arrays we initialized earlier
-                    update_quality_flags[ms, xt] = subset_results['update_quality_flags'][p]
                     no2_partial_columns_updated[ms, xt, :, :] = subset_results['apriori_partial_columns'][p, :, :] # [pixel, iteration, lev]
                     tropospheric_amf_updated[ms, xt, :] = subset_results['trop_amfs'][p, :] # [pixel, iteration]
                     no2_tropospheric_vcd_updated[ms, xt, :] = subset_results['retrieved_trop_vcd'][p, :]
