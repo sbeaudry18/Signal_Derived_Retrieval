@@ -646,7 +646,7 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
             coverage_of_model_pixel = np.full(flat_shape_update_invariant, np.nan, dtype=float)
             proportion_free_troposphere = np.full(flat_shape_update_invariant, np.nan, dtype=float)
             removed_free_troposphere_in_practice = np.full(flat_shape, np.nan, dtype=float)
-            update_quality_flags = np.full(flat_shape_update_invariant, 2**31, dtype=int) # use last position of 32-bit int as fill value
+            update_quality_flags = np.full(flat_shape_update_invariant, 0, dtype=int)
             no2_boundary_layer_prior_updated = np.full(flat_shape, np.nan, dtype=float)
             retrieved_over_apriori_gridcell_arr = np.full(flat_shape_update_invariant, np.nan, dtype=float)
             retrieved_model_mismatch_flag_arr = np.full(flat_shape_update_invariant, -9999, dtype=int)

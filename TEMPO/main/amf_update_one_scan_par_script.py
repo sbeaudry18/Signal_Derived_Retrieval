@@ -1083,7 +1083,7 @@ try:
         coverage_of_model_pixel = np.full(flat_shape_update_invariant, np.nan, dtype=float)
         proportion_free_troposphere = np.full(flat_shape_update_invariant, np.nan, dtype=float)
         removed_free_troposphere_in_practice = np.full(flat_shape, np.nan, dtype=float)
-        update_quality_flags = np.full(flat_shape_update_invariant, 2**31, dtype=int) # use last position of 32-bit int as fill value
+        update_quality_flags = np.full(flat_shape_update_invariant, 0, dtype=int)
         no2_boundary_layer_prior_updated = np.full(flat_shape, np.nan, dtype=float)
         retrieved_over_apriori_gridcell_arr = np.full(flat_shape_update_invariant, np.nan, dtype=float)
         retrieved_model_mismatch_flag_arr = np.full(flat_shape_update_invariant, -9999, dtype=int)
@@ -1238,8 +1238,6 @@ try:
 
                     # Collect results for this subset
                     subset_results = {}
-                    subset_results['ms_match'] = ms_match
-                    subset_results['xt_match'] = xt_match
                     subset_results['ms_match_filt'] = ms_match_filt
                     subset_results['xt_match_filt'] = xt_match_filt
                     subset_results['update_quality_flags'] = update_quality_flags
@@ -1278,19 +1276,12 @@ try:
                 subset_results = subset_results_list[i_subset] # dict
 
                 # Reconstruct data into the [mirror_step, xtrack] format
-                # Most of the variables use "ms_match_filt" which only includes calculation quality pixels
-                # However, the update_quality_flags variable uses "ms_match" so loop over that seperately
-                for p in range(len(subset_results['ms_match'])):
-                    ms = subset_results['ms_match'][p]
-                    xt = subset_results['xt_match'][p]
-                    update_quality_flags[ms, xt] = subset_results['update_quality_flags'][p]
-
-                # Now go through the variables for calculation quality pixels
                 for p in range(len(subset_results['ms_match_filt'])):
                     ms = subset_results['ms_match_filt'][p]
                     xt = subset_results['xt_match_filt'][p]
                     
                     # Assign values to final arrays we initialized earlier
+                    update_quality_flags[ms, xt] = subset_results['update_quality_flags'][p]
                     no2_partial_columns_updated[ms, xt, :, :] = subset_results['apriori_partial_columns'][p, :, :] # [pixel, iteration, lev]
                     tropospheric_amf_updated[ms, xt, :] = subset_results['trop_amfs'][p, :] # [pixel, iteration]
                     no2_tropospheric_vcd_updated[ms, xt, :] = subset_results['retrieved_trop_vcd'][p, :]
