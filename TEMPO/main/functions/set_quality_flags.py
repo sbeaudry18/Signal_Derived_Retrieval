@@ -1,7 +1,7 @@
 #### set_quality_flags.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2025-10-15
+# Last changed: 2025-11-03
 # Location: Signal_Derived_Retrieval/TEMPO/main/functions
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -28,14 +28,6 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None):
     # Set the scattering_weight variable
     if update_mode == "Standard":
         sw_var = 'scattering_weights'
-
-        # SB 2025-03-25: My read of the TEMPO PUM is that the provided scattering weights do not
-        # include the temperature correction factors. As of this date, the calculation of custom
-        # scattering weights already incorporates the temperature factors. Add them in for the 
-        # standard mode here
-        temperature_corrections = scan_ds['TemperatureCorrection'].data
-        scattering_weights *= temperature_corrections
-
     else:
         sw_var = 'ScatteringWeightsIPA_{}'.format(update_mode)
 
@@ -54,6 +46,14 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None):
     pixel_area = scan_ds['area'].data
     snow_ice_fraction = scan_ds['snow_ice_fraction'].data
 
+    if update_mode == "Standard":
+        # SB 2025-03-25: My read of the TEMPO PUM is that the provided scattering weights do not
+        # include the temperature correction factors. As of this date, the calculation of custom
+        # scattering weights already incorporates the temperature factors. Add them in for the 
+        # standard mode here
+        temperature_corrections = scan_ds['TemperatureCorrection'].data
+        scattering_weights *= temperature_corrections
+
     shape_2d = original_amf.shape
 
     # SB 2025-03-24: We are going to implement a series of filters, building up, first, basic fundamentals for
@@ -71,35 +71,43 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None):
     trop_index_known = trop_index > 0
 
     # Filter 3: Scattering weight profile is complete
-    scattering_weights_good = ~np.any(np.isnan(scattering_weights), axis=1)
+    scattering_weights_good = ~np.any(np.isnan(scattering_weights), axis=2)
 
     # Filter 4: AMF calculation will produce non-zero values
     # Since this does not exactly follow the NASA method and may use custom scattering weights,
     # there is the risk that the calculated AMF will be zero. This is most likely in scenarios where the
     # cloud radiance fraction is 1 and the cloud layer is at or above the tropopause layer
 
-    # Check if we have a precalculated value for this provided 
-    if not isinstance(nonzero_amf_calc, np.ndarray):
+    # SB 2025-11-03: This filter is necessary when we were using custom scattering weights where
+    #                there is a potential for zero AMFs. When we use the standard scattering weights,
+    #                this is a time-consuming way to duplicate filter 0. Set the same as 0 in these cases
 
-        # If not, loop through the pixels and determine this
-        nonzero_amf_calc = np.array([], dtype=bool)
-        for ms in range(shape_2d[0]):
-            for xt in range(shape_2d[1]):
-                if trop_index_known[ms, xt] & scattering_weights_good[ms, xt]:
-                    trop = trop_index[ms, xt]
-                    m = scattering_weights[ms, xt, :trop+1]
-                    v = model_partial_columns[ms, xt, :trop+1]
+    if update_mode == "Standard":
+        nonzero_amf_calc = np.copy(original_amf_exists).flatten()
 
-                    numerator = np.sum(m * v)
-                    denominator = np.sum(v)
-                    calculated_amf = numerator / denominator
-                    if calculated_amf > 0:
-                        nonzero_amf_calc = np.append(nonzero_amf_calc, True)
+    else:
+        # Check if we have a precalculated value for this provided 
+        if not isinstance(nonzero_amf_calc, np.ndarray):
 
+            # If not, loop through the pixels and determine this
+            nonzero_amf_calc = np.array([], dtype=bool)
+            for ms in range(shape_2d[0]):
+                for xt in range(shape_2d[1]):
+                    if trop_index_known[ms, xt] & scattering_weights_good[ms, xt]:
+                        trop = trop_index[ms, xt]
+                        m = scattering_weights[ms, xt, :trop+1]
+                        v = model_partial_columns[ms, xt, :trop+1]
+
+                        numerator = np.sum(m * v)
+                        denominator = np.sum(v)
+                        calculated_amf = numerator / denominator
+                        if calculated_amf > 0:
+                            nonzero_amf_calc = np.append(nonzero_amf_calc, True)
+
+                        else:
+                            nonzero_amf_calc = np.append(nonzero_amf_calc, False)
                     else:
                         nonzero_amf_calc = np.append(nonzero_amf_calc, False)
-                else:
-                    nonzero_amf_calc = np.append(nonzero_amf_calc, False)
 
     # Filters 0-4 remove "critically bad" pixels; pixels that cannot be allowed to enter the AMF update process
     # or they will cause runtime warnings and or Exceptions

@@ -825,7 +825,7 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
                                                                 proportion_free_troposphere, 
                                                                 {
                                                                     'units': '1',
-                                                                    'description': 'proportion of tropospheric NO2 in the coarse model resolution (1 degree) allocated to the free troposphere'
+                                                                    'description': 'proportion of tropospheric NO2 in the coarse model resolution (25 km) allocated to the free troposphere'
                                                                 }
             )
 
@@ -933,8 +933,6 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
         new_file_name = 'SDR-TEMPO_' + date_string + "_S{:03d}_".format(scan) + geobounds_str + '_n{:02d}_'.format(N_updates) + pblh_save_string + '_proc_' + current_time_string + '.nc'
 
         global_attrs = {
-            "version": "2stat",
-            "version_notes": "Retrieval version 2stat is version 2b for TEMPO. 2b retains the vertical shape factors of no2 partial columns from GEOS-CF. Unlike version 2, the layer containing the boundary layer pause is uniformly treated as part of the free troposphere in this version. The removed free tropospheric VCD is allowed to be negative, if one of the pixels with main_data_quality flag == 0 has a negative retrieved VCD.",
             "Signal_Derived_Retrieval__commit": git_commit
         }
 

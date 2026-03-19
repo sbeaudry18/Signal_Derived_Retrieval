@@ -1,7 +1,7 @@
 #### amf_update_one_scan_par_script.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2025-10-15
+# Last changed: 2025-11-03
 # Location: Signal_Derived_Retrieval/TEMPO/main
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -1057,45 +1057,52 @@ try:
             temperature_corrections = scan_ds['TemperatureCorrection'].data
             scattering_weights *= temperature_corrections
 
+            nonzero_amf_calc=None # Use precomputed AMF values
+
         else:
             sw_var = 'ScatteringWeightsIPA_{}'.format(mode)
             scattering_weights = scan_ds[sw_var].data
 
-        dview.scatter('scattering_weights', scattering_weights.reshape((scan_ds.geoscf_tropopause_layer_index.size, 72)))
-
-        def nonzero_amf_check_loop():
-            import numpy as np
-
-            trop_index_known = geoscf_tropopause_layer_index > 0
-            scattering_weights_good = ~np.any(np.isnan(scattering_weights), axis=1)
-
-            nonzero_amf_calc = np.array([], dtype=bool)
-
-            for pi in range(geoscf_tropopause_layer_index.size):
-                if trop_index_known[pi] & scattering_weights_good[pi]:
-                    trop = geoscf_tropopause_layer_index[pi]
-                    m = scattering_weights[pi, :trop+1]
-                    v = gas_profile[pi, :trop+1]
-
-                    numerator = np.sum(m * v)
-                    denominator = np.sum(v)
-                    calculated_amf = numerator / denominator
-                    if calculated_amf > 0:
-                        nonzero_amf_calc = np.append(nonzero_amf_calc, True)
-
+            # Since filter 4 features a loop to check AMFs for non-standard scattering weights, precalculate it via the main process
+    
+            dview.scatter('scattering_weights', scattering_weights.reshape((scan_ds.geoscf_tropopause_layer_index.size, 72)))
+    
+            def nonzero_amf_check_loop():
+                import numpy as np
+    
+                trop_index_known = geoscf_tropopause_layer_index > 0
+                scattering_weights_good = ~np.any(np.isnan(scattering_weights), axis=1)
+    
+                nonzero_amf_calc = np.array([], dtype=bool)
+    
+                for pi in range(geoscf_tropopause_layer_index.size):
+                    if trop_index_known[pi] & scattering_weights_good[pi]:
+                        trop = geoscf_tropopause_layer_index[pi]
+                        m = scattering_weights[pi, :trop+1]
+                        v = gas_profile[pi, :trop+1]
+    
+                        numerator = np.sum(m * v)
+                        denominator = np.sum(v)
+                        calculated_amf = numerator / denominator
+                        if calculated_amf > 0:
+                            nonzero_amf_calc = np.append(nonzero_amf_calc, True)
+    
+                        else:
+                            nonzero_amf_calc = np.append(nonzero_amf_calc, False)
                     else:
                         nonzero_amf_calc = np.append(nonzero_amf_calc, False)
-                else:
-                    nonzero_amf_calc = np.append(nonzero_amf_calc, False)
-
-            return nonzero_amf_calc
+    
+                return nonzero_amf_calc
         
-        nonzero_amf_calc = dview.apply_sync(nonzero_amf_check_loop)
-        nonzero_amf_calc = np.concatenate(nonzero_amf_calc) # no need to reshape
-        # since set_quality_flags is expecting this to be 1D
+            nonzero_amf_calc = dview.apply_sync(nonzero_amf_check_loop)
+            nonzero_amf_calc = np.concatenate(nonzero_amf_calc) # no need to reshape
+            # since set_quality_flags is expecting this to be 1D
 
         # Now just call the normal function with the precalculated values for nonzero_amf_calc
         scan_ds = set_quality_flags(scan_ds, mode, nonzero_amf_calc)
+
+        if mode != "Standard":
+            dview.execute('del scattering_weights')
 
     ##########################
     #### Clean up Engines ####
@@ -1120,10 +1127,6 @@ try:
     dview.execute('del geoscf_tropopause_layer_index')
     dview.execute('del gas_profile')
     dview.execute('del boundary_layer_index')
-
-    # From setting quality flags
-    dview.execute('del scattering_weights')
-
 
     ############################################
     #### Run amf_recursive_update algorithm ####
@@ -1437,7 +1440,7 @@ try:
                                                             proportion_free_troposphere, 
                                                             {
                                                                 'units': '1',
-                                                                'description': 'proportion of tropospheric NO2 in the coarse model resolution (1 degree) allocated to the free troposphere'
+                                                                'description': 'proportion of tropospheric NO2 in the coarse model resolution (25 km) allocated to the free troposphere'
                                                             }
         )
 
@@ -1558,8 +1561,6 @@ try:
     new_file_name = 'SDR-TEMPO_' + date_string + "_S{:03d}_".format(scan) + geobounds_str + '_n{:02d}_'.format(N_updates) + pblh_save_string + '_proc_' + current_time_string + '.nc'
 
     global_attrs = {
-        "version": "2stat",
-        "version_notes": "Retrieval version 2stat is version 2b for TEMPO. 2b retains the vertical shape factors of no2 partial columns from GEOS-CF. Unlike version 2, the layer containing the boundary layer pause is uniformly treated as part of the free troposphere in this version. The removed free tropospheric VCD is allowed to be negative, if one of the pixels with main_data_quality flag == 0 has a negative retrieved VCD.",
         "Signal_Derived_Retrieval__commit": git_commit
     }
 
