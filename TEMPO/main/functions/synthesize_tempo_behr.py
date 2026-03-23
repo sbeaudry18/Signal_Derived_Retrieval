@@ -1,7 +1,7 @@
 #### synthesize_tempo_behr.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2025-05-25
+# Last changed: 2026-03-23
 # Location: Signal_Derived_Retrieval/TEMPO/main/functions
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -13,7 +13,7 @@ from netCDF4 import Dataset
 import xarray as xr
 import pickle
 
-def synthesize_tempo_behr(tempo_ds_path: str, tempo_pickle_path: str, vars_path: str, full_FOR: bool, ms_min, ms_max, xt_min, xt_max, use_behr_output=False, behr_output=None, fill_behr_vars=False, verbose=False, upper_bound_inclusive=True):
+def synthesize_tempo_behr(tempo_ds_path: str, vars_path: str, full_FOR: bool, tempo_init_path=None, behr_output=None, use_behr_output=False, fill_behr_vars=False, verbose=False, upper_bound_inclusive=True):
     '''
     Opens partially-completed MATLAB structure from the BEHR workflow, reformats as an xarray dataset, and adds additional information
 
@@ -21,24 +21,15 @@ def synthesize_tempo_behr(tempo_ds_path: str, tempo_pickle_path: str, vars_path:
     ----------
     tempo_ds_path: str
         Full file name of the original TEMPO dataset
-    tempo_pickle_path: str
-        Path to the standard TEMPO pickle produced by TEMPO_L2_NO2_on_date
     vars_path: str
         Full file name of the .csv file containing TEMPO variable names, locations, and corresponding OMI variables
     full_FOR: bool
         whether to process for the full field of regard
-    ms_min: int
-        Lower mirrorstep bound
-    ms_max: int
-        Upper mirrorstep bound
-    xt_min: int
-        Lower xtrack bound
-    xt_max: int
-        Upper xtrack bound
-    use_behr_output: bool (Optional)
-        Set to True to include data from a BEHR-prepared dataset. Default is False.
+    tempo_init_path: str (Optional)
+        Path to the standard TEMPO dictionary produced by TEMPO_L2_NO2_on_date to be read by BEHR MATLAB code. 
     behr_output : str or dict (Optional)
-        If use_behr_output=True, the pickled or unpickled BEHR dictionary to use. 
+        The pickled or unpickled BEHR dictionary to use. 
+    use_behr_output : bool (Optional)
     fill_behr_vars : bool (Optional)
         If use_behr_output=False, whether to include the BEHR variables and add fill values. Default is False.
     verbose: bool (default=False)
@@ -49,8 +40,34 @@ def synthesize_tempo_behr(tempo_ds_path: str, tempo_pickle_path: str, vars_path:
     Returns
     -------
     xr.Dataset
-        Dataset with both S5P and BEHR variables
+        Dataset with both TEMPO and BEHR variables
     '''
+    # Open the standard TEMPO product
+    tempo_standard_ds = Dataset(tempo_ds_path, mode='r')
+
+    # Get the processing version
+    processing_version = tempo_standard_ds.processing_version
+
+    ############################################################
+
+    # Open the TEMPO initialized dictionary (if we produced it)
+    if isinstance(tempo_init_path, str):
+        with open(tempo_init_path, 'rb') as handle:
+            tempo_init_dict = pickle.load(handle)
+        handle.close()
+
+    elif isinstance(tempo_init_path, dict):
+        tempo_init_dict = tempo_init_path.copy()
+        del tempo_init_path
+
+    elif tempo_init_path is None:
+        # We haven't read in any of the variables yet; they will all need to be read in from the TEMPO nc dataset
+        no_init_dict = True
+
+    else:
+        raise Exception("tempo_init_path is of unsupported type '{}'".format(type(tempo_init_path)))
+
+    ############################################################
 
     if use_behr_output:
         # Open the BEHR output dictionary produced by MATLAB
@@ -69,21 +86,7 @@ def synthesize_tempo_behr(tempo_ds_path: str, tempo_pickle_path: str, vars_path:
         # Pull out the keys of the BEHR output dictionary
         behr_output_keys = list(tempo_behr_dict.keys())
 
-    # Open the TEMPO initialized dictionary
-    if isinstance(tempo_pickle_path, str):
-        with open(tempo_pickle_path, 'rb') as handle:
-            tempo_init_dict = pickle.load(handle)
-        handle.close()
-
-    elif isinstance(tempo_pickle_path, dict):
-        tempo_init_dict = tempo_pickle_path.copy()
-        del tempo_pickle_path
-
-    else:
-        raise Exception("tempo_pickle_path is of unsupported type '{}'".format(type(tempo_pickle_path)))
-
-    # Open the standard TEMPO product
-    tempo_standard_ds = Dataset(tempo_ds_path, mode='r')
+    ############################################################
 
     try:
         if full_FOR:
@@ -93,6 +96,15 @@ def synthesize_tempo_behr(tempo_ds_path: str, tempo_pickle_path: str, vars_path:
             xt_max = tempo_standard_ds['xtrack'].size
 
         else:
+            if no_init_dict:
+                raise Exception("If not running on full FOR, must pass an argument to 'tempo_init_path'")
+            
+            # Get the dimension bounds from the dictionary
+            ms_min = int(tempo_init_dict['MirrorStepBdy'][0])
+            ms_max = int(tempo_init_dict['MirrorStepBdy'][1])
+            xt_min = int(tempo_init_dict['XTrackBdy'][0])
+            xt_max = int(tempo_init_dict['XTrackBdy'][1])
+
             if upper_bound_inclusive:
                 ms_max += 1
                 xt_max += 1
@@ -112,14 +124,17 @@ def synthesize_tempo_behr(tempo_ds_path: str, tempo_pickle_path: str, vars_path:
         tempo_data_main = {}
         tempo_data_coords = {}
         
+        # These are variables which are in the standard TEMPO L2 product files
         sp_variable_list = [
                         'longitude', 'latitude', 'time', 'viewing_zenith_angle', 'solar_zenith_angle', 'viewing_azimuth_angle', 'solar_azimuth_angle', 'relative_azimuth_angle', 'amf_stratosphere', 'amf_troposphere', 'amf_total', 'eff_cloud_fraction', 'amf_cloud_fraction', 'terrain_height', 'surface_pressure', 'albedo', 'amf_cloud_pressure', 'snow_ice_fraction', 'vertical_column_total', 'vertical_column_total_uncertainty', 'fitted_slant_column', 'fitted_slant_column_uncertainty', 'vertical_column_troposphere', 'vertical_column_troposphere_uncertainty', 'vertical_column_stratosphere', 'tropopause_pressure', 'main_data_quality_flag', 'ground_pixel_quality_flag', 'amf_diagnostic_flag', 'longitude_bounds', 'latitude_bounds', 'gas_profile', 'temperature_profile', 'scattering_weights', 'mirror_step', 'xtrack'
         ]
 
+        # These are (optional) variables added by the BEHR MATLAB processing which can be used to compute custom scattering weights
         behr_variable_list = [
             'MODISCloud', 'MODISAlbedo', 'MODISAlbedoQuality', 'MODISAlbedoFillFlag', 'GLOBETerrainHeight', 'AlbedoOceanFlag'
         ]
 
+        # These are additional helper variables
         misc_variable_list = [
             'BadGeoMask', 'i_mirror_step', 'i_xtrack'
         ]
@@ -173,6 +188,7 @@ def synthesize_tempo_behr(tempo_ds_path: str, tempo_pickle_path: str, vars_path:
             'MODISAlbedoFillFlag': {'units': 'bool', 'source': 'BEHR', 'description': 'Indicates if more than 50% of albedo quality values are fills for the pixel'},
             'GLOBETerrainHeight': {'units': 'hPa', 'source': 'BEHR', 'description': 'The average surface elevation of the pixel calculated from the GLOBE database'},
             'AlbedoOceanFlag': {'units': 'bool', 'source': 'BEHR'},
+
             'BadGeoMask': {'description': 'indicates positions where latitude/longitude values are invalid', 'source': 'BEHR'},
             'i_mirror_step': {'description': 'integer positions of mirror_step'},
             'i_xtrack': {'description': 'integer positions of xtrack'}
@@ -227,6 +243,17 @@ def synthesize_tempo_behr(tempo_ds_path: str, tempo_pickle_path: str, vars_path:
             'i_xtrack': ['xtrack']
         }
 
+        # SB 2026-03-19: TEMPO V04 introduces two new variables which may be helpful: pbl_height (derived from
+        # GEOS-CF) and 2-m wind speed (also from GEOS-CF? unsure). If we are working with V04, include these variables.
+        # I'll also assume that these variables will be in any future versions...
+        if processing_version >= 4:
+            sp_variable_list += ['pbl_height', 'wind_speed']
+
+            variable_attrs['pbl_height'] = {'units': 'm', 'source': 'TEMPO', 'description': 'planetary boundary layer height derived from GEOS-CF'}
+            variable_attrs['wind_speed'] = {'units': 'm/s', 'source': 'TEMPO', 'description': '2-meter wind speed determined from the Eastward and Northward components'}
+
+            variable_dims['pbl_height'] = ['mirror_step', 'xtrack']
+            variable_dims['wind_speed'] = ['mirror_step', 'xtrack']
 
 
         # Create version of the variable table with the TEMPO variable name set as the index
@@ -342,11 +369,16 @@ def synthesize_tempo_behr(tempo_ds_path: str, tempo_pickle_path: str, vars_path:
                 elif vr in misc_variable_list:
                     if vr == 'BadGeoMask':
                         data_exists = True
-                        if isinstance(tempo_init_dict[vr], float):
-                            data = np.full((ms_max-ms_min, xt_max-xt_min), False, dtype=bool)
 
-                        elif isinstance(tempo_init_dict[vr], np.ndarray):
-                            data = tempo_init_dict[vr][ms_min:ms_max, xt_min:xt_max].astype(bool)
+                        if no_init_dict:
+                            data = np.ma.getmaskarray(tempo_standard_ds['geolocation']['latitude'][ms_min:ms_max, xt_min:xt_max]).astype(bool)
+
+                        else:
+                            if isinstance(tempo_init_dict[vr], float):
+                                data = np.full((ms_max-ms_min, xt_max-xt_min), False, dtype=bool)
+
+                            elif isinstance(tempo_init_dict[vr], np.ndarray):
+                                data = tempo_init_dict[vr][ms_min:ms_max, xt_min:xt_max].astype(bool)
 
                     elif vr == 'RelativeAzimuthAngle':
                         data = tempo_init_dict[vr][ms_min:ms_max, xt_min:xt_max]
@@ -403,9 +435,11 @@ def synthesize_tempo_behr(tempo_ds_path: str, tempo_pickle_path: str, vars_path:
         global_attributes = {
             'TEMPO_standard_id_G{:02d}'.format(granule): tempo_standard_ds.local_granule_id,
             'TEMPO_version_id_G{:02d}'.format(granule): tempo_standard_ds.version_id,
-            'LatBdy_G{:02d}'.format(granule): tempo_init_dict['LatBdy'],
-            'LonBdy_G{:02d}'.format(granule): tempo_init_dict['LonBdy'],
         }
+
+        if not no_init_dict:
+            global_attributes['LatBdy_G{:02d}'.format(granule)] = tempo_init_dict['LatBdy']
+            global_attributes['LonBdy_G{:02d}'.format(granule)] = tempo_init_dict['LonBdy']
 
         if use_behr_output:
             global_attributes['BEHR_Date_G{:02d}'.format(granule)] = tempo_behr_dict['Date']

@@ -1,7 +1,7 @@
 #### amf_update_one_scan_par_script.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2025-11-03
+# Last changed: 2026-03-23
 # Location: Signal_Derived_Retrieval/TEMPO/main
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -12,10 +12,6 @@ Main function of the signal-derived retrieval, parallelized version. Takes TEMPO
 
 Parameters
 ----------
-PY_TO_MAT_SUITCASE : str
-    path to directory containing the pickle files from TEMPO_L2_NO2_on_date.py
-MAT_TO_PY_SUITCASE : str
-    path to directory containing the pickle files from read_main_single.m (allowed to be empty)
 scan_df : pd.DataFrame
     DataFrame with column 'Name' and 'Granule' for each pickle file
 tempo_dir_head : str
@@ -51,12 +47,11 @@ import argparse
 # Define arguments for the script
 parser = argparse.ArgumentParser()
 parser.add_argument('--scan_df_file', type=str)
-parser.add_argument('--PY_TO_MAT_SUITCASE', type=str)
-parser.add_argument('--MAT_TO_PY_SUITCASE', type=str)
 parser.add_argument('--tempo_dir_head', type=str)
 parser.add_argument('--vars_path', type=str)
 parser.add_argument('--constants_path', type=str)
 parser.add_argument('--save_path', type=str)
+parser.add_argument('--sdr_version', type=str)
 parser.add_argument('--minimize_output_size', type=int)
 parser.add_argument('--full_FOR', type=int)
 parser.add_argument('--num_engines', type=int)
@@ -72,12 +67,11 @@ args = vars(parser.parse_args())
 
 # Parse arguments 
 scan_df_file = args['scan_df_file']
-PY_TO_MAT_SUITCASE = args['PY_TO_MAT_SUITCASE']
-MAT_TO_PY_SUITCASE = args['MAT_TO_PY_SUITCASE']
 tempo_dir_head = args['tempo_dir_head']
 vars_path = args['vars_path']
 constants_path = args['constants_path']
 save_path = args['save_path']
+sdr_version = args['sdr_version']
 minimize_output_size = bool(int(args['minimize_output_size']))
 full_FOR = bool(int(args['full_FOR']))
 num_engines = int(args['num_engines'])
@@ -137,6 +131,8 @@ def save_partial_ds():
 
 try:
     # Set some options
+    ecf_threshold = 0.1
+
     if pblh.lower() == 'hrrr':
         constant_boundary_layer_height = False
 
@@ -154,6 +150,10 @@ try:
             raise Exception("Path for 'hrrr_coords' does not exist: {}".format(hrrr_coords))
         
         from herbie import Herbie
+
+    elif (pblh.lower() == 'geoscf') | (pblh.lower() == 'geos-cf'):
+        constant_boundary_layer_height = False
+        use_provided_pblh = True
 
     else:
         constant_boundary_layer_height = True
@@ -177,59 +177,63 @@ try:
     if verbosity > 2:
         print('Synthesizing BEHR and TEMPO data')
 
-    grans_with_behr = len(scan_df['BEHR Name'].dropna())
+    if 'BEHR Name' in list(scan_df.columns):
+        grans_with_behr = len(scan_df['BEHR Name'].dropna())
 
     granule_dict = {}
 
     first_granule = True
     for granule in scan_df.index:
-        # Open TEMPO pickle
-        pickle_name = scan_df.loc[granule, 'TEMPO Name']
-        tempo_pickle_path = '{}/{}'.format(PY_TO_MAT_SUITCASE, pickle_name)
-        
-        with open(tempo_pickle_path, 'rb') as handle:
-            tempo_init_dict = pickle.load(handle)
-        handle.close()        
-
-        # Get dimension bounds
-        ms_min = int(tempo_init_dict['MirrorStepBdy'][0])
-        ms_max = int(tempo_init_dict['MirrorStepBdy'][1])
-        xt_min = int(tempo_init_dict['XTrackBdy'][0])
-        xt_max = int(tempo_init_dict['XTrackBdy'][1])
-        
-        original_file = tempo_init_dict['TEMPOProductID']
+        # Details about the granule
+        tempo_file = scan_df.loc[granule, 'TEMPO Name']
+        original_file_path = os.path.join(scan_df.loc[granule, 'TEMPO Location'], scan_df.loc[granule, 'TEMPO Name'])
         scan = scan_df.loc[granule, 'Scan']
-        # granule = granule
-        
-        date_string = re.search(r'^TEMPO_NO2_L2_V\d{2}_(\d{8})T\d{6}Z_S\d{3}G\d{2}\.nc$', original_file).group(1)
+
+        date_string = re.search(r'^TEMPO_NO2_L2_V\d{2}_(\d{8})T\d{6}Z_S\d{3}G\d{2}\.nc$', tempo_file).group(1)
+        date_of_interest = datetime.strptime(date_string, '%Y%m%d')
+
         year_str = date_string[:4]
         month_str = date_string[4:6]
-        collection = re.search(r'^TEMPO_NO2_L2_(V\d{2})_\d{8}T\d{6}Z_S\d{3}G\d{2}\.nc$', original_file).group(1)
+        collection = re.search(r'^TEMPO_NO2_L2_(V\d{2})_\d{8}T\d{6}Z_S\d{3}G\d{2}\.nc$', tempo_file).group(1)
 
-        date_of_interest = datetime.strptime(date_string, '%Y%m%d')
-        
-        original_file_path = '{}/NO2/L2/{}/{}/{}/{}'.format(tempo_dir_head, collection, year_str, month_str, original_file)
-        
-        if isinstance(scan_df.loc[granule, 'BEHR Name'], float):
-            if np.isnan(scan_df.loc[granule, 'BEHR Name']):
-                if grans_with_behr == 0:
-                    # None of the granules have BEHR data.
-                    # No need to add BEHR fill values for the sake of combining the granule datasets
-                    fill_behr_vars = False
+        if not first_granule:
+            if collection != scan_collection:
+                raise ValueError("Granules do not share the same processor version.")
             
-                else:
-                    # Since other granules have BEHR data, we want to include those variables here
-                    fill_behr_vars = True
-                    
-                granule_ds = synthesize_tempo_behr(original_file_path, tempo_init_dict, vars_path, full_FOR, ms_min, ms_max, xt_min, xt_max, use_behr_output=False, fill_behr_vars=fill_behr_vars)
-        
-        
+        # Optionally, we might also have an initialized dictionary of data and a BEHR output
+        if 'Init Dict Name' in list(scan_df.columns):
+            if not np.isnan(scan_df.loc[granule, 'Init Dict Name']):
+                tempo_init_dict = os.path.join(scan_df.loc[granule, 'Init Dict Location'], scan_df.loc[granule, 'Init Dict Name'])
             else:
-                raise Exception('Unable to interpret value for BEHR Name')
-        
+                tempo_init_dict = None
         else:
-            behr_pickle_path = '{}/{}'.format(MAT_TO_PY_SUITCASE, scan_df.loc[granule, 'BEHR Name'])
-            granule_ds = synthesize_tempo_behr(original_file_path, tempo_init_dict, vars_path, full_FOR, ms_min, ms_max, xt_min, xt_max, use_behr_output=True, behr_output=behr_pickle_path)
+            tempo_init_dict = None
+
+        if 'BEHR Name' in list(scan_df.columns):
+            if isinstance(scan_df.loc[granule, 'BEHR Name'], float):
+                if np.isnan(scan_df.loc[granule, 'BEHR Name']):
+                    behr_dict = None
+
+                    if grans_with_behr == 0:
+                        # None of the granules have BEHR data.
+                        # No need to add BEHR fill values for the sake of combining the granule datasets
+                        fill_behr_vars = False
+                    else:
+                        # Since other granules have BEHR data, we want to include those variables here
+                        fill_behr_vars = True
+                else:
+                    raise Exception('Unable to interpret value for BEHR Name') 
+                
+            elif isinstance(scan_df.loc[granule, 'BEHR Name'], str):
+                behr_dict = os.path.join(scan_df.loc[granule, 'BEHR Location'], scan_df.loc[granule, 'BEHR Name'])
+                fill_behr_vars = False # we don't fill because we will use the data in the behr_dict
+
+        else:
+            # We didn't add additional data using the BEHR code
+            behr_dict = None
+            fill_behr_vars = False
+
+        granule_ds = synthesize_tempo_behr(original_file_path, vars_path, full_FOR, tempo_init_path=tempo_init_dict, behr_output=behr_dict, fill_behr_vars=fill_behr_vars)
 
         # Add a variable to associate these mirror_step values with the appropriate granule
         granule_ds['granule'] = (['mirror_step'], np.full(granule_ds['mirror_step'].shape, granule, dtype=int), {'description': 'granule number for TEMPO scan'})
@@ -238,15 +242,18 @@ try:
         granule_dict[granule] = granule_ds
 
         if first_granule:
-            lat_domain = granule_ds.attrs['LatBdy_G{:02d}'.format(granule)]
-            lon_domain = granule_ds.attrs['LonBdy_G{:02d}'.format(granule)]
+            if full_FOR:
+                geobounds_str = "full-FOR"
+
+            else:
+                # Take the latitude/longitude boundaries used to filter the initialized dictionaries
+                # and construct a string describing these boundaries
+                lat_domain = granule_ds.attrs['LatBdy_G{:02d}'.format(granule)]
+                lon_domain = granule_ds.attrs['LonBdy_G{:02d}'.format(granule)]
+                geobounds_str = build_geobounds_str(lat_domain, lon_domain)
+
+            scan_collection = collection
             first_granule = False
-
-    if full_FOR:
-        geobounds_str = "full-FOR"
-
-    else:
-        geobounds_str = build_geobounds_str(lat_domain, lon_domain)
 
     #########################################################
     #### Concatenate Granules along Mirrorstep Dimension ####
@@ -632,6 +639,14 @@ try:
     #### Add Boundary Layer Heights ####
     ####################################
 
+    # SB 2026-03-19
+    # We now need to account for V04 product where the GEOS-CF derived PBLH is included
+    if int(scan_collection[:1]) >= 4:
+        # Rename the column from "pbl_height" so it's clear it is from GEOS-CF
+        scan_ds = scan_ds.rename({'pbl_height': 'boundary_layer_height_geoscf'})
+
+    # The prefix "sdr" before boundary_layer_height will indicate the values being used in the BL/FT split
+
     # ---------------------------------------------------------------------------------------------------------------------------------------
 
     if constant_boundary_layer_height:
@@ -640,6 +655,19 @@ try:
         if verbosity > 2:
             print('Using constant boundary layer height of ' + str(pblh_value) + ' m')
         pblh_save_string = "fixed_bl_" + str(pblh_value)
+
+        scan_ds['sdr_boundary_layer_height'] = (['mirror_step', 'xtrack'], nearest_pblh, {'units': 'm', 'description': pblh_var_description})
+
+    elif use_provided_pblh:
+        if int(scan_collection[:1]) < 4:
+            raise Exception("Cannot use provided boundary layer height with this version of the TEMPO product")
+        
+        pblh_var_description = 'boundary layer height derived from GEOS-CF (from standard retrieval)'
+        if verbosity > 2:
+            print('Using boundary layer heights provided in the TEMPO product')
+        pblh_save_string = "variable_bl_GEOSCF"
+
+        scan_ds['sdr_boundary_layer_height'] = (['mirror_step', 'xtrack'], scan_ds.boundary_layer_height_geoscf.data, {'units': 'm', 'description': pblh_var_description})
 
     # ---------------------------------------------------------------------------------------------------------------------------------------
 
@@ -798,7 +826,7 @@ try:
 
     # ---------------------------------------------------------------------------------------------------------------------------------------
 
-    scan_ds['boundary_layer_height'] = (['mirror_step', 'xtrack'], nearest_pblh, {'units': 'm', 'description': pblh_var_description})
+    scan_ds['sdr_boundary_layer_height'] = (['mirror_step', 'xtrack'], nearest_pblh, {'units': 'm', 'description': pblh_var_description})
 
 
     ##########################################
@@ -875,21 +903,21 @@ try:
 
     # First, the index corresponding to the boundary layer height should be found
     
-    dview.scatter('boundary_layer_height', scan_ds.boundary_layer_height.data.flatten())
+    dview.scatter('sdr_boundary_layer_height', scan_ds.sdr_boundary_layer_height.data.flatten())
     dview.scatter('main_data_quality_flag', scan_ds.main_data_quality_flag.data.flatten())
-    dview.scatter('interface_heights', scan_ds.interface_heights.data.reshape((scan_ds.boundary_layer_height.size, 72)))
+    dview.scatter('interface_heights', scan_ds.interface_heights.data.reshape((scan_ds.sdr_boundary_layer_height.size, 72)))
 
     def boundary_layer_index_loop():
         import numpy as np
         
-        num_pixels = boundary_layer_height.size
+        num_pixels = sdr_boundary_layer_height.size
         boundary_level_layer = np.full(num_pixels, -9999, dtype=int)
 
         for i in range(num_pixels):
             if main_data_quality_flag[i] > 0:
                 continue
 
-            blh = boundary_layer_height[i] # m
+            blh = sdr_boundary_layer_height[i] # m
 
             if (blh == -99.) | (blh == -123.):
                 continue                
@@ -919,7 +947,7 @@ try:
         return boundary_level_layer
 
     boundary_level_layer = dview.apply_sync(boundary_layer_index_loop)
-    boundary_level_layer = np.concatenate(boundary_level_layer).reshape(scan_ds.boundary_layer_height.shape)
+    boundary_level_layer = np.concatenate(boundary_level_layer).reshape(scan_ds.sdr_boundary_layer_height.shape)
 
     scan_ds['boundary_layer_index'] = (
                                             ['mirror_step', 'xtrack'],
@@ -927,7 +955,7 @@ try:
                                             {
                                                 'units': '1',
                                                 'description': "Index of the highest layer in GEOS-CF which is completely inside the convective/planetary boundary layer",
-                                                'ancillary_vars': ['boundary_layer_height', 'interface_heights']
+                                                'ancillary_vars': ['sdr_boundary_layer_height', 'interface_heights']
                                             }
     )
 
@@ -1099,7 +1127,7 @@ try:
             # since set_quality_flags is expecting this to be 1D
 
         # Now just call the normal function with the precalculated values for nonzero_amf_calc
-        scan_ds = set_quality_flags(scan_ds, mode, nonzero_amf_calc)
+        scan_ds = set_quality_flags(scan_ds, mode, nonzero_amf_calc, ecf_threshold=ecf_threshold)
 
         if mode != "Standard":
             dview.execute('del scattering_weights')
@@ -1119,7 +1147,7 @@ try:
     dview.execute('del surf_pres_array')
 
     # From boundary layer selection
-    dview.execute('del boundary_layer_height')
+    dview.execute('del sdr_boundary_layer_height')
     dview.execute('del main_data_quality_flag')
     dview.execute('del interface_heights')
 
@@ -1540,45 +1568,60 @@ try:
                                                                     }
         )
 
-    ################
-    #### Saving ####
-    ################
+        ################
+        #### Saving ####
+        ################
 
-    # Removal of vertically-resolved variables if indicated by user
-    if minimize_output_size:
-        from functions.prune_dataset import prune_dataset
+        # Removal of vertically-resolved variables if indicated by user
+        if minimize_output_size:
+            from functions.prune_dataset import prune_dataset
 
-        # With this setting, all vertically resolved variables (aside from custom scattering weights)
-        # will be removed. This includes original variables which cannot otherwise be reconstructed, but
-        # which are available in the original datasets
-        scan_ds = prune_dataset(scan_ds, update_modes, remove_originals=True)
+            # With this setting, all vertically resolved variables (aside from custom scattering weights)
+            # will be removed. This includes original variables which cannot otherwise be reconstructed, but
+            # which are available in the original datasets
+            scan_ds = prune_dataset(scan_ds, update_modes, remove_originals=True)
 
-    # Naming of output file
+        global_attrs = {
+            "Signal_Derived_Retrieval__commit": git_commit
+        }
 
-    current_time = datetime.now()
-    current_time_string = current_time.strftime('%Y%m%dT%H%M')
+        scan_ds = scan_ds.assign_attrs(global_attrs)
 
-    new_file_name = 'SDR-TEMPO_' + date_string + "_S{:03d}_".format(scan) + geobounds_str + '_n{:02d}_'.format(N_updates) + pblh_save_string + '_proc_' + current_time_string + '.nc'
+        from finalize_product_file import finalize_product_file
+        # Note that the default in this function is to save iteration 1 as the SDR value
+        finalize_product_file(
+                                processing_dataset=scan_ds, 
+                                product_dir=save_path, 
+                                sdr_version=sdr_version, 
+                                scan_num=scan, 
+                                geo_scope=geobounds_str, 
+                                product_itr = int(1)
+        )
 
-    global_attrs = {
-        "Signal_Derived_Retrieval__commit": git_commit
-    }
+    # SB 2026-03-22: The code below was used to save the output as a "BEHR-RED-TEMPO" file,
+    # before we settled on some of the details of the SDR product. Retaining for now since it
+    # could be resurrected to save intermediate products that retain all of the iterations instead
+    # of just the one reported in the SDR product.
+        if False:
+            # Naming of output file
+            current_time = datetime.now()
+            current_time_string = current_time.strftime('%Y%m%dT%H%M')
 
-    scan_ds = scan_ds.assign_attrs(global_attrs)
-    
-    # behr_mode sub path is not included since it was set as part of save_path in the director script.
-    final_save_path = os.path.join(save_path, geobounds_str, year_str, month_str)
-    
-    # Example: for a file generated on the square CONUS bounds with no BEHR-MODIS data for April 2024:
-    # save_path/without_MODIS/lat_N25-N50_lon_W125-W065/2024/04/SDR-TEMPO...
+            new_file_name = 'BEHR-RED-TEMPO_' + date_string + "_S{:03d}_".format(scan) + geobounds_str + '_n{:02d}_'.format(N_updates) + pblh_save_string + '_proc_' + current_time_string + '.nc'
 
-    # Check if the sub-directories exist. If they do not, then make them.
-    if not os.path.exists(final_save_path):
-        os.makedirs(final_save_path)
+            # behr_mode sub path is not included since it was set as part of save_path in the director script.
+            final_save_path = os.path.join(save_path, geobounds_str, year_str, month_str)
+            
+            # Example: for a file generated on the square CONUS bounds with no BEHR-MODIS data for April 2024:
+            # save_path/without_MODIS/lat_N25-N50_lon_W125-W065/2024/04/BEHR-RED-TEMPO...
 
-    final_save_name = os.path.join(final_save_path, new_file_name)
+            # Check if the sub-directories exist. If they do not, then make them.
+            if not os.path.exists(final_save_path):
+                os.makedirs(final_save_path)
 
-    scan_ds.to_netcdf(final_save_name, mode='w')
+            final_save_name = os.path.join(final_save_path, new_file_name)
+
+            scan_ds.to_netcdf(final_save_name, mode='w')
 
 
 except AssertionError as ae:

@@ -1,7 +1,7 @@
 #### add_pblh_hrrr.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2025-05-25
+# Last changed: 2026-03-19
 # Location: Signal_Derived_Retrieval/TEMPO/main/functions
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -37,7 +37,7 @@ def add_pblh_hrrr(scan_ds: xr.Dataset, hrrr_polygon, hrrr_coordinates: xr.Datase
     Returns
     -------
     scan_ds : xr.Dataset
-        scan_ds with the added variable 'boundary_layer_height'
+        scan_ds with the added variable 'sdr_boundary_layer_height'
     '''
     if constant_pblh:
         nearest_pblh = np.full((scan_ds['mirror_step'].size, scan_ds['xtrack'].size), pblh_value, dtype='f8')
@@ -123,5 +123,5 @@ def add_pblh_hrrr(scan_ds: xr.Dataset, hrrr_polygon, hrrr_coordinates: xr.Datase
 
         # ---------------------------------------------------------------------------------------------------------------------------------------
 
-    scan_ds['boundary_layer_height'] = (['mirror_step', 'xtrack'], nearest_pblh, {'units': 'm', 'description': pblh_var_description})
+    scan_ds['sdr_boundary_layer_height'] = (['mirror_step', 'xtrack'], nearest_pblh, {'units': 'm', 'description': pblh_var_description})
     return scan_ds

@@ -1,7 +1,7 @@
 #### set_quality_flags.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2025-11-03
+# Last changed: 2026-03-19
 # Location: Signal_Derived_Retrieval/TEMPO/main/functions
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None):
+def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None, ecf_threshold=0.1):
     '''
     Creates bit array flag for troubleshooting and quality filtering
 
@@ -23,6 +23,8 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None):
         Scattering weight mode to determine flags for. Default is Standard
     nonzero_amf_calc : array (Optional)
         Predetermined nonzero_amf_calc to use instead of entering loop in this function
+    ecf_threshold : float (Optional)
+        The maximum effective cloud fraction allowed for good quality pixels
     '''
 
     # Set the scattering_weight variable
@@ -120,7 +122,7 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None):
     main_data_quality_0 = data_quality_flag < 1
 
     # Filter 6: strict requriement for low effective cloud fraction
-    low_eff_cloud_fraction = eff_cloud_fraction <= 0.1
+    low_eff_cloud_fraction = eff_cloud_fraction <= ecf_threshold
 
     # Filter 7: solar zenith angle (SZA) is less than 70 degrees (following TEMPO PUM)
     low_sza = sza < 70

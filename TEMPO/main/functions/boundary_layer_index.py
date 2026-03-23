@@ -1,7 +1,7 @@
 #### boundary_layer_index.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2025-03-11
+# Last changed: 2026-03-19
 # Location: Signal_Derived_Retrieval/TEMPO/main/functions
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -17,7 +17,7 @@ def boundary_layer_index(scan_ds: xr.Dataset):
     Parameters
     ----------
     scan_ds : xr.Dataset
-        Dataset with variables 'boundary_layer_height' and 'interface_heights'
+        Dataset with variables 'sdr_boundary_layer_height' and 'interface_heights'
 
     Returns
     -------
@@ -37,7 +37,7 @@ def boundary_layer_index(scan_ds: xr.Dataset):
             if scan_ds['main_data_quality_flag'].data[ms, xt] > 0:
                 continue
 
-            blh = scan_ds['boundary_layer_height'].data[ms, xt] # m
+            blh = scan_ds['sdr_boundary_layer_height'].data[ms, xt] # m
 
             if (blh == -99.) | (blh == -123.):
                 continue
@@ -75,7 +75,7 @@ def boundary_layer_index(scan_ds: xr.Dataset):
                                             {
                                                 'units': '1',
                                                 'description': "Index of the highest layer in GEOS-CF which is completely inside the convective/planetary boundary layer",
-                                                'ancillary_vars': ['boundary_layer_height', 'interface_heights']
+                                                'ancillary_vars': ['sdr_boundary_layer_height', 'interface_heights']
                                             }
     )
 

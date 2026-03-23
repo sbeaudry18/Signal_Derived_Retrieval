@@ -1,7 +1,7 @@
 #### TEMPO_L2_NO2_on_date.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2025-10-07
+# Last changed: 2026-03-23
 # Location: Signal_Derived_Retrieval/TEMPO/main
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -20,7 +20,7 @@ import warnings
 from functions.build_tempo_struct import build_tempo_struct
 from functions.build_geobounds_str import build_geobounds_str
 
-def TEMPO_L2_NO2_on_date(date_string, tempo_location, collection, vars_path, intermediate_save_location, full_FOR, lonmin=-180, lonmax=180, latmin=-90, latmax=90, replace_existing=False):
+def TEMPO_L2_NO2_on_date(date_string, tempo_location, collection, vars_path, full_FOR=True, intermediate_save_location=None, lonmin=-180, lonmax=180, latmin=-90, latmax=90, replace_existing=False):
     '''
     Prepares pickled dictionaries to be read by read_main_single.m or amf_update_one_scan.py
 
@@ -34,10 +34,10 @@ def TEMPO_L2_NO2_on_date(date_string, tempo_location, collection, vars_path, int
         Version of TEMPO product to use as VXX
     vars_path : str
         Path to csv file containing group assignments for TEMPO variables
-    intermediate_save_location : str
-        Path of directory to save pickled dictionaries
-    full_FOR : bool
+    full_FOR : bool (Optional)
         If True, prepares process for entire field of regard
+    intermediate_save_location : str (Optional)
+        Path of directory to save pickled dictionaries
     lonmin : float (Optional)
         Minimum longitude boundary if not full_FOR
     lonmax : float (Optional)
@@ -55,6 +55,8 @@ def TEMPO_L2_NO2_on_date(date_string, tempo_location, collection, vars_path, int
         Name of file listing the names of the pickled files
     
     '''
+
+
     script_dir = os.path.dirname(os.path.realpath(__file__))
 
     lat_domain = np.array([latmin, latmax])
@@ -102,106 +104,119 @@ def TEMPO_L2_NO2_on_date(date_string, tempo_location, collection, vars_path, int
         no_tempo_files = True
 
     else:
-        file_df = pd.DataFrame({'File Name': all_possible_files, 'File Location': all_possible_file_locations})
-        file_df['Date String'] = file_df['File Name'].str.extract(r'^TEMPO_NO2_L2_V\d{2}_(\d{8}T\d{6})Z_S\d{3}G\d{2}\.nc$')
+        file_df = pd.DataFrame({'TEMPO Name': all_possible_files, 'TEMPO Location': all_possible_file_locations})
+        file_df['Date String'] = file_df['TEMPO Name'].str.extract(r'^TEMPO_NO2_L2_V\d{2}_(\d{8}T\d{6})Z_S\d{3}G\d{2}\.nc$')
         file_df['Time UTC'] = pd.to_datetime(file_df['Date String'], format='%Y%m%dT%H%M%S', utc=True)
         file_df['Time Eastern'] = file_df['Time UTC'].dt.tz_convert('US/Eastern')
         file_df['Time Pacific'] = file_df['Time UTC'].dt.tz_convert('US/Pacific')
 
         true_day = date_of_interest.day
         file_df_filt = file_df[ (file_df['Time Eastern'].dt.day == true_day) & (file_df['Time Pacific'].dt.day == true_day) ]
-
+        
         if len(file_df_filt) == 0:
             no_tempo_files = True
 
         else:
             no_tempo_files = False
-            list_of_pickled_files = []
+            file_df_filt = file_df_filt[['TEMPO Name', 'TEMPO Location']]
 
-            existing_pickled_files = os.listdir(intermediate_save_location)
-            existing_pickled_files.sort()
+            # SB 2026-03-23:
+            # If we are running for the full FOR and not adding addtional variables in MATLAB, it really makes
+            # no sense to produce the intermediate dictionaries here because we are simply going to reopen the 
+            # dataset later. Just save the matched variable names.
 
-            for i in file_df_filt.index:
-                # Before proceeding, check the intermediate save location to see if the file has already been initialized
-                nc_pat = re.compile(r'^(TEMPO_NO2_L2_V03_\d{8}T\d{6}Z_S\d{3}G\d{2})\.nc$')
-                nc_name = file_df_filt.loc[i, 'File Name']
-                file_id = nc_pat.match(nc_name).group(1)
-                pickle_test_name = '{file_id}_{geo}_BEHR_initialized.pickle'.format(file_id=file_id, geo=geobounds_str)
+            if (not full_FOR) | (isinstance(intermediate_save_location, str)):
+                # If we are not using the full FOR, we need to determine minimum and maximum dimension values
+                # If we passed an intermediate save location, assume we need the intermediate files even if in full FOR mode
+                list_of_pickled_files = []
 
-                if pickle_test_name not in existing_pickled_files:
-                    # Then produce the initialized dictionary
-                    granule_full_file = os.path.join(file_df_filt.loc[i, 'File Location'], file_df_filt.loc[i, 'File Name'])
+                existing_pickled_files = os.listdir(intermediate_save_location)
+                existing_pickled_files.sort()
 
-                    tempo_product = Dataset(granule_full_file, mode='r')
+                for i in file_df_filt.index:
+                    # Before proceeding, check the intermediate save location to see if the file has already been initialized
+                    nc_pat = re.compile(r'^(TEMPO_NO2_L2_{collection}_\d{{8}}T\d{{6}}Z_S\d{{3}}G\d{{2}})\.nc$'.format(collection=collection))
+                    nc_name = file_df_filt.loc[i, 'TEMPO Name']
+                    file_id = nc_pat.match(nc_name).group(1)
+                    pickle_test_name = '{file_id}_{geo}_BEHR_initialized.pickle'.format(file_id=file_id, geo=geobounds_str)
 
-                    mirror_step = np.ma.getdata(tempo_product['mirror_step'][:])
-                    xtrack = np.ma.getdata(tempo_product['xtrack'][:])
+                    if pickle_test_name not in existing_pickled_files:
+                        # Then produce the initialized dictionary
+                        granule_full_file = os.path.join(file_df_filt.loc[i, 'TEMPO Location'], file_df_filt.loc[i, 'TEMPO Name'])
 
-                    latitude = np.ma.getdata(tempo_product['geolocation']['latitude'][:])
-                    longitude = np.ma.getdata(tempo_product['geolocation']['longitude'][:])
+                        tempo_product = Dataset(granule_full_file, mode='r')
 
-                    if full_FOR:
-                        pickle_save_location, pickle_save_name = build_tempo_struct(tempo_product, vars_path, intermediate_save_location, lat_domain, lon_domain)
+                        mirror_step = np.ma.getdata(tempo_product['mirror_step'][:])
+                        xtrack = np.ma.getdata(tempo_product['xtrack'][:])
+
+                        latitude = np.ma.getdata(tempo_product['geolocation']['latitude'][:])
+                        longitude = np.ma.getdata(tempo_product['geolocation']['longitude'][:])
+
+                        if full_FOR:
+                            pickle_save_location, pickle_save_name = build_tempo_struct(tempo_product, vars_path, intermediate_save_location, lat_domain, lon_domain)
+
+                        else:
+                            # Determine scanline/ground-pixel range consistent with provided geobounds
+                            ms_mesh, xt_mesh = np.meshgrid(mirror_step, xtrack, indexing='ij')
+                            in_domain = ((latitude >= lat_domain[0]) & 
+                                        (latitude <= lat_domain[1]) & 
+                                        (longitude >= lon_domain[0]) & 
+                                        (longitude <= lon_domain[1]))
+                            
+                            # If the dataset does not overlap with the domain at all
+                            # skip the rest of this code and remove it from the list
+                            if np.all(~in_domain):
+                                #print('Rejected {}; all pixels outside domain'.format(file_df_filt.loc[i, 'TEMPO Name']))
+                                continue
+
+                            # Otherwise, continue with extracting data
+                            
+                            xt_mesh_filtered = xt_mesh[in_domain]
+                            xt_min = xt_mesh_filtered.min()
+                            xt_max = xt_mesh_filtered.max()
+                            xt_domain = np.array([xt_min, xt_max])
+
+                            # I can proceed with a normal definition of the minimum and maximum ground pixel values
+                            ms_mesh_filtered = ms_mesh[in_domain]
+                            ms_min = ms_mesh_filtered.min()
+                            ms_max = ms_mesh_filtered.max()
+                            ms_domain = np.array([ms_min, ms_max])
+
+                            pickle_save_location, pickle_save_name = build_tempo_struct(tempo_product, vars_path, intermediate_save_location, lat_domain, lon_domain, ms_domain, xt_domain)
 
                     else:
-                        # Determine scanline/ground-pixel range consistent with provided geobounds
-                        ms_mesh, xt_mesh = np.meshgrid(mirror_step, xtrack, indexing='ij')
-                        in_domain = ((latitude >= lat_domain[0]) & 
-                                    (latitude <= lat_domain[1]) & 
-                                    (longitude >= lon_domain[0]) & 
-                                    (longitude <= lon_domain[1]))
-                        
-                        # If the dataset does not overlap with the domain at all
-                        # skip the rest of this code and remove it from the list
-                        if np.all(~in_domain):
-                            #print('Rejected {}; all pixels outside domain'.format(file_df_filt.loc[i, 'File Name']))
-                            continue
+                        pickle_save_name = pickle_test_name
 
-                        # Otherwise, continue with extracting data
-                        
-                        xt_mesh_filtered = xt_mesh[in_domain]
-                        xt_min = xt_mesh_filtered.min()
-                        xt_max = xt_mesh_filtered.max()
-                        xt_domain = np.array([xt_min, xt_max])
+                    list_of_pickled_files.append( pickle_save_name )
 
-                        # I can proceed with a normal definition of the minimum and maximum ground pixel values
-                        ms_mesh_filtered = ms_mesh[in_domain]
-                        ms_min = ms_mesh_filtered.min()
-                        ms_max = ms_mesh_filtered.max()
-                        ms_domain = np.array([ms_min, ms_max])
+                file_df_filt['Init Dict Name'] = list_of_pickled_files
+                file_df_filt['Init Dict Location'] = pickle_save_location
 
-                        pickle_save_location, pickle_save_name = build_tempo_struct(tempo_product, vars_path, intermediate_save_location, lat_domain, lon_domain, ms_domain, xt_domain)
+                # Saving
+                file_savename = '{}/SDR_initialized_dicts_on_{}_transient.txt'.format(script_dir, date_string)
+
+                if os.path.exists(file_savename):
+                    warnings.warn("The file '{}' already exists. Overwriting existing file...".format(file_savename))
+                #    overwrite = input("Overwrite existing file? (y/n): ")
+
+                #    if overwrite.lower() == 'y':
+                #        print("Overwriting existing file...")
+                #    else:
+                #        raise Exception("The file '{}' already exists. Remove this file or command to overwrite in future session.".format(file_savename))
+
+                if no_tempo_files:
+                    print('No TEMPO files for date {}'.format(date_string))
+                    with open(file_savename, 'w') as file:
+                        file.write("9999: No TEMPO files")
+                    file.close()
 
                 else:
-                    pickle_save_name = pickle_test_name
+                    with open(file_savename, 'w') as file:
+                        for i in range(len(list_of_pickled_files)):
+                            file.write("{}\n".format(list_of_pickled_files[i]))
+                    file.close()
 
-                list_of_pickled_files.append( pickle_save_name )
-
-    # Saving
-    file_savename = '{}/BEHR_initialized_dicts_on_{}_transient.txt'.format(script_dir, date_string)
-
-    if os.path.exists(file_savename):
-        warnings.warn("The file '{}' already exists. Overwriting existing file...".format(file_savename))
-    #    overwrite = input("Overwrite existing file? (y/n): ")
-
-    #    if overwrite.lower() == 'y':
-    #        print("Overwriting existing file...")
-    #    else:
-    #        raise Exception("The file '{}' already exists. Remove this file or command to overwrite in future session.".format(file_savename))
-
-    if no_tempo_files:
-        print('No TEMPO files for date {}'.format(date_string))
-        with open(file_savename, 'w') as file:
-            file.write("9999: No TEMPO files")
-        file.close()
-
-    else:
-        with open(file_savename, 'w') as file:
-            for i in range(len(list_of_pickled_files)):
-                file.write("{}\n".format(list_of_pickled_files[i]))
-        file.close()
-
-    return file_savename
+    return file_df_filt
 
 def main():
     import argparse
@@ -223,29 +238,33 @@ def main():
     # Controls whether retrieval is completed for entire field of regard (FOR)
     fullfor = bool(args['fullfor'])
 
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+
     if fullfor:
-        file_savename = TEMPO_L2_NO2_on_date(
+        file_df_filt = TEMPO_L2_NO2_on_date(
                                             args['date_string'],
                                             args['tempo_location'],
                                             args['collection'],
                                             args['vars_path'],
-                                            args['intermediate_save_location'],
-                                            fullfor
+                                            full_FOR=fullfor,
+                                            intermediate_save_location=args['intermediate_save_location']
                                             )
 
     else:
-        file_savename = TEMPO_L2_NO2_on_date(
+        file_df_filt = TEMPO_L2_NO2_on_date(
                                             args['date_string'],
                                             args['tempo_location'],
                                             args['collection'],
                                             args['vars_path'],
-                                            args['intermediate_save_location'],
-                                            fullfor,
+                                            fullfor=False,
+                                            intermediate_save_location=args['intermediate_save_location'],
                                             lonmin=args['lonmin'],
                                             lonmax=args['lonmax'],
                                             latmin=args['latmin'],
                                             latmax=args['latmax']
                                             )
+        
+    file_df_filt.to_csv('{}/TEMPO_files_on_{}.csv'.format(script_dir, args['date_string']))
     #print('Pickled datasets produced for {}'.format(date_string))
     #print('Files stored at: {}'.format(file_savename))
     

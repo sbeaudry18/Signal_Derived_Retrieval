@@ -1,13 +1,13 @@
 #### finalize_product_file.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2025-10-30
+# Last changed: 2026-03-22
 # Location: Signal_Derived_Retrieval/TEMPO/main
 # Contact: samuel_beaudry@berkeley.edu
 
 ##################################
 
-def finalize_product_file(processing_dataset, product_dir, sdr_version, product_itr: int=1, sw_mode: str='Standard', trace_gas: str='NO2'):
+def finalize_product_file(processing_dataset, product_dir, sdr_version, scan_num, geo_scope, product_itr: int=1, sw_mode: str='Standard', trace_gas: str='NO2', convert_from_behr=False):
     '''
     Takes processing datasets produced by amf_update_one_scan and reformats to be published as a data product
 
@@ -17,12 +17,18 @@ def finalize_product_file(processing_dataset, product_dir, sdr_version, product_
         Location to save the product file at
     sdr_version : str
         Version of the signal-derived retrieval used to produce the processing_dataset
+    scan : int
+        Scan number of dataset
+    geo_scope : str
+        Geographic scope of the scan dataset
     product_itr : int  
         Iteration of the AMF recursive update to use as the signal-derived product
     sw_mode : str
         Scattering weight mode used for signal-derived retrieval
     trace_gas : str
         Default NO2. Trace gas of retrieval.
+    convert_from_behr : bool
+        Default False. If True, pass processing_dataset as a string point to a BEHR-RED-TEMPO result
     '''
 
     import numpy as np
@@ -33,17 +39,15 @@ def finalize_product_file(processing_dataset, product_dir, sdr_version, product_
     import re
 
     if isinstance(processing_dataset, str):
-        processing_file_path = processing_dataset
-        scan_ds = xr.open_dataset(processing_file_path)
+        if convert_from_behr:
+            processing_file_path = processing_dataset
+            scan_ds = xr.open_dataset(processing_file_path)
 
-    elif isinstance(processing_dataset, xr.Dataset):
-        # SB 2025-10-30: Could implement this later; problem now is that it's easy to rename
-        # the file with the existing name, but this is not stored in datasets at the moment.
-        # This should probably be added to the metadata in future versions anyway
-        raise ValueError("'processing_dataset' must be a path leading to a netCDF file")
+        else:
+            raise ValueError("'processing_dataset' is a string but convert_from_behr is set to False. Pass an xarray Dataset instead")
 
-    else:
-        raise ValueError("'processing_dataset' must be a path leading to a netCDF file")
+    elif not isinstance(processing_dataset, xr.Dataset):
+        raise ValueError("'processing_dataset' must be a path leading to a netCDF file or an xarray Dataset")
     
     ###################
     #### VARIABLES ####
@@ -58,8 +62,8 @@ def finalize_product_file(processing_dataset, product_dir, sdr_version, product_
         var_attrs['product'] = "Signal-Derived Retrieval (SDR)"
         
         # Select update iteration if necessary
-        if len(old_var_data.shape) == 3:
-            var_data = scan_ds[old_name].data[:, :, product_itr]
+        if 'iteration' in scan_ds[old_name].dims:
+            var_data = scan_ds[old_name].sel(iteration=product_itr).data # will remove the iteration dim
             # Store the iteration we report as SDR product
             var_attrs['iteration_of_update'] = product_itr
 
@@ -184,39 +188,58 @@ def finalize_product_file(processing_dataset, product_dir, sdr_version, product_
     #### FILE NAME ####
     ###################
 
-    processing_file_name = os.path.basename(processing_file_path)
-    processing_pat = re.compile(r'^BEHR-RED-TEMPO_(\d{8})_S(\d{3})_([^_]+)_n\d+_variable_bl_HRRR_proc_(\d{8}T\d{4})\.nc$')
+    if convert_from_behr:
+        # Pull this information from the BEHR-RED-TEMPO file name
+        processing_file_name = os.path.basename(processing_file_path)
+        processing_pat = re.compile(r'^BEHR-RED-TEMPO_(\d{8})_(S\d{3})_([^_]+)_n\d+_variable_bl_HRRR_proc_(\d{8}T\d{4})\.nc$')
 
-    # Capture groups:
-    # 1: TEMPO measurement date (YYYYMMDD, UTC)
-    # 2: TEMPO scan (e.g. 010)
-    # 3: Geographic scope of product (e.g. full-FOR)
-    # 4: Processing time (e.g. YYYYMMDDTHHMM)
+        # Capture groups:
+        # 1: TEMPO measurement date (YYYYMMDD, UTC)
+        # 2: TEMPO scan (e.g. 010)
+        # 3: Geographic scope of product (e.g. full-FOR)
+        # 4: Processing time (e.g. YYYYMMDDTHHMM)
 
-    # Some notes:
-    # - Processing time is for the processing dataset, not the finalization here
-    # - I am not capturing the number of iterations or treatement of the boundary layer
-    #   since this function requires that the SDR version is passed as an argument and
-    #   these are taken as given for the version. They should also be capture in the 
-    #   product metadata: boundary layers are labeled as coming from HRRR and the SDR
-    #   product interation is included.
+        # Some notes:
+        # - Processing time is for the processing dataset, not the finalization here
+        # - I am not capturing the number of iterations or treatement of the boundary layer
+        #   since this function requires that the SDR version is passed as an argument and
+        #   these are taken as given for the version. They should also be capture in the 
+        #   product metadata: boundary layers are labeled as coming from HRRR and the SDR
+        #   product interation is included.
 
-    regex_results = processing_pat.match(processing_file_name)
-    meas_date = regex_results.group(1)
-    meas_year = meas_date[:4]
-    meas_month = meas_date[4:6]
-    scan_num = regex_results.group(2)
-    geo_scope = regex_results.group(3)
-    processing_time = regex_results.group(4)
+        regex_results = processing_pat.match(processing_file_name)
+        scan_num = regex_results.group(2)
+        geo_scope = regex_results.group(3)
+        current_time_string = regex_results.group(4)
+
+        scan_ds.attrs['intermediate_dataset_id'] = processing_file_name
+
+    else:
+        # Get the processing time (now with second precision)
+        current_time = datetime.datetime.now(tz=datetime.timezone.utc)
+        current_time_string = current_time.strftime('%Y%m%dT%H%M%SZ')
+
+        scan_num = "S{:03d}".format(scan_num)
+
 
     # Store processing time as an attribute to clean up the file name
-    scan_ds.attrs['sdr_processing_time'] = processing_time
-    scan_ds.attrs['intermediate_dataset_id'] = processing_file_name
-
+    scan_ds.attrs['sdr_processing_time'] = current_time_string
+    
     # Add the start and end times of the scan (which is more descriptive than the measurement date)
-    # Format: YYYYMMDDTHHMMSS (same as S5P products)
-    start_time = pd.to_datetime(str(scan_ds.time_utc.data[0])).strftime('%Y%m%dT%H%M%S') # annoying solution but it does work
-    end_time = pd.to_datetime(str(scan_ds.time_utc.data[-1])).strftime('%Y%m%dT%H%M%S')
+    # Format: YYYYMMDDTHHMMSSZ (same as S5P products)
+    # start_time = pd.to_datetime(str(scan_ds.time_utc.data[0])).strftime('%Y%m%dT%H%M%SZ') # annoying solution but it does work
+    end_time = pd.to_datetime(str(scan_ds.time_utc.data[-1])).strftime('%Y%m%dT%H%M%SZ')
+
+    # SB 2026-03-22: The start time of mirror_step == 0  is not the same as the start time of the first granule, which means this method
+    # produces filenames that are not easy to match up with standard product files. I still like having the end time for usability, but
+    # let's use the granule ID stored in attributes to get a start time that is the same as the standard product files.
+    # Record the lowest granule
+    lowest_gran = int(np.nanmin(scan_ds.granule.data))
+    # Get the ID of this granule
+    lowest_gran_id = scan_ds.attrs['TEMPO_standard_id_G{:02d}'.format(lowest_gran)]
+    # Capture the start time
+    gran_id_pat = re.compile(r'TEMPO_[^_]+_[^_]+_[^_]+_(\d{8}T\d{6}Z)_S\d{3}G\d{2}\.nc')
+    start_time = gran_id_pat.match(lowest_gran_id).group(1)
 
     # Assemble new file name
     product_name = "SDR-TEMPO_NO2_L2_{}_{}_{}_S{}_{}.nc".format(
@@ -226,6 +249,9 @@ def finalize_product_file(processing_dataset, product_dir, sdr_version, product_
         scan_num,
         geo_scope
     )
+
+    meas_year = start_time[:4]
+    meas_month = start_time[4:6]
 
     # Save to product directory
     # product_dir should be at level "SDR", below which we specify:

@@ -45,3 +45,5 @@ none,none,none,support_data,snow_ice_fraction
 none,none,none,support_data,ground_pixel_quality_flag
 none,none,none,geolocation,relative_azimuth_angle
 none,none,none,support_data,amf_diagnostic_flag
+none,none,none,support_data,pbl_height
+none,none,none,support_data,wind_speed
