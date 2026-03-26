@@ -1,7 +1,7 @@
 #### set_quality_flags.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2026-03-25
+# Last changed: 2026-03-26
 # Location: Signal_Derived_Retrieval/TEMPO/main/functions
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None, ecf_threshold=0.1):
+def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None, ecf_max=0.1, sza_max=70, sif_max=0):
     '''
     Creates bit array flag for troubleshooting and quality filtering
 
@@ -23,8 +23,12 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None, ec
         Scattering weight mode to determine flags for. Default is Standard
     nonzero_amf_calc : array (Optional)
         Predetermined nonzero_amf_calc to use instead of entering loop in this function
-    ecf_threshold : float (Optional)
+    ecf_max : float (Optional)
         The maximum effective cloud fraction allowed for good quality pixels
+    sza_max : float (Optional)
+        The maximum solar zenith angle allowed for good quality pixels
+    sif_max : float (Optional)
+        The maximum snow/ice fraction allowed for good quality pixels
     '''
 
     # Set the scattering_weight variable
@@ -122,10 +126,10 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None, ec
     main_data_quality_0 = data_quality_flag < 1
 
     # Filter 6: strict requriement for low effective cloud fraction
-    low_eff_cloud_fraction = eff_cloud_fraction <= ecf_threshold
+    low_eff_cloud_fraction = eff_cloud_fraction <= ecf_max
 
-    # Filter 7: solar zenith angle (SZA) is less than 70 degrees (following TEMPO PUM)
-    low_sza = sza < 70
+    # Filter 7: solar zenith angle (SZA) is less than or equal to threshold (70 degrees according to TEMPO PUM for V03)
+    low_sza = sza <= sza_max
 
     # Filter 8: model boundary layer VCD was found successfully
     model_bl_vcd_exists = ~np.isnan(model_boundary_layer_vcd)
@@ -141,8 +145,8 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None, ec
     # pixel areas are in m^2
     valid_pixel_area = (pixel_area >= 5e6) & (pixel_area <= 4e7)
 
-    # Filter 12: snow ice fraction is zero
-    zero_snow_ice = snow_ice_fraction == 0
+    # Filter 12: snow ice fraction is below the threshold
+    low_snow_ice = snow_ice_fraction <= sif_max
 
     # Collect quality filters into a single array
     quality_filter = np.stack([
@@ -158,7 +162,7 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None, ec
         bl_index_exists.flatten(), #9
         bl_index_below_trop.flatten(), # 10
         valid_pixel_area.flatten(), # 11
-        zero_snow_ice.flatten() # 12
+        low_snow_ice.flatten() # 12
     ], axis=1)
 
     # It is easier to interpret the resulting bit array flags if 1 corresponds to bad quality and 0 to good (since all flags at 0 yield an int
@@ -167,7 +171,7 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None, ec
 
     qf_columns = ['original_trop_amf_invalid', 'original_trop_vcd_invalid', 'trop_index_unknown', 'scattering_weights_bad', 'calculated_trop_amf_invalid',
                   'main_data_quality_above_0', 'high_eff_cloud_fraction', 'high_sza', 'model_bl_vcd_unknown', 'bl_index_unknown', 'bl_index_above_tp', 
-                  'invalid_pixel_area', 'nonzero_snow_ice']
+                  'invalid_pixel_area', 'high_snow_ice']
     
     quality_df = pd.DataFrame(quality_filter_inverted.astype(int), columns=qf_columns, dtype=str)
 
@@ -189,7 +193,10 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None, ec
                                                         {
                                                             'description': 'bit flag indicating quality of pixel for update algorithm',
                                                             'bit_positions': np.flip(np.arange(quality_df.shape[1])),
-                                                            'bit_meanings': list(quality_df.columns)
+                                                            'bit_meanings': list(quality_df.columns),
+                                                            'eff_cloud_fraction__upper_cutoff': ecf_max,
+                                                            'solar_zenith_angle__upper_cutoff': sza_max,
+                                                            'snow_ice_fraction__upper_cutoff': sif_max,
                                                         }
     )
 

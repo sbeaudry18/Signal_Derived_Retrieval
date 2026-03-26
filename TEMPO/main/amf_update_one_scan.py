@@ -1,7 +1,7 @@
 #### amf_update_one_scan.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2026-03-24
+# Last changed: 2026-03-26
 # Location: Signal_Derived_Retrieval/TEMPO/main
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -102,7 +102,12 @@ def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save
 
     try:
         # Set some options
-        ecf_threshold = 0.1
+        # Maximum allowed effective cloud fraction
+        ecf_max = 0.1
+        # Maximum allowed solar zenith angle
+        sza_max = 70
+        # Maximum allowed snow/ice fraction
+        sif_max = 0
 
         if pblh.lower() == 'hrrr':
             constant_boundary_layer_height = False
@@ -655,7 +660,7 @@ def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save
             if verbosity > 2:
                 print('----> {}'.format(mode))
 
-            scan_ds = set_quality_flags(scan_ds, update_mode=mode, ecf_threshold=ecf_threshold)
+            scan_ds = set_quality_flags(scan_ds, update_mode=mode, ecf_max=ecf_max, sza_max=sza_max, sif_max=sif_max)
 
         ############################################
         #### Run amf_recursive_update algorithm ####
@@ -701,111 +706,140 @@ def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save
 
             iteration_record = np.array([0, 1, N_updates], dtype=int) # Added to avoid UnboundLocalError (presumably for when no good pixels are found for lat/lon pair
 
+            # Store the names of variables needed for the algorithm
+            subset_vars = [
+                'update_quality_flags_{}'.format(mode),
+                'gas_profile',
+                'amf_troposphere',
+                'vertical_column_troposphere',
+                'geoscf_tropopause_layer_index',
+                'boundary_layer_index',
+                'model_no2_boundary_layer_vcd',
+                'model_no2_tropospheric_vcd',
+                sw_var,
+                'area',
+                'TemperatureCorrection',
+            ]
+
             # Each prior is distinguished by a lat/lon pair on the GEOS-CF grid
 
-            # For full field of regard (FOR) runs, lat_domain and lon_domain can be set
-            # arbitrarily large to ensure all pixels are selected for
+            # Compose a DataFrame to group the pixels by shared GEOS-CF priors
+            geoscf_df = pd.DataFrame({
+                'mirror_step': ms_mesh.flatten(),
+                'xtrack': xt_mesh.flatten(),
+                'BadGeoMask': scan_ds['BadGeoMask'].data.flatten(),
+                'nearest_geoscf_latitude': scan_ds['nearest_geoscf_latitude'].data.flatten(),
+                'nearest_geoscf_longitude': scan_ds['nearest_geoscf_longitude'].data.flatten()
+            })
 
-            # We can quickly determine if a selected (lat, lon) coordinate is outside the FOR
-            # using a rough outline of the FOR
+            # Drop pixels with no geolocation info
+            geoscf_df = geoscf_df[~geoscf_df['BadGeoMask']]
+            geoscf_df.drop(columns=['BadGeoMask'], inplace=True)
 
-            with open(os.path.join(constants_path, 'TEMPO_rough_FOR.pickle'), 'rb') as handle:
-                field_of_regard = pickle.load(handle)
+            # Group by prior
+            geoscf_grouping = geoscf_df.groupby(['nearest_geoscf_latitude', 'nearest_geoscf_longitude'])
+            # Return a DataFrame where the 'mirror_step' column gives a list of indices for the matching pixels
+            ms_match_df = geoscf_grouping['mirror_step'].apply(list).reset_index()
 
-            for lat in np.arange(lat_domain[0], lat_domain[1]+0.25, 0.25):
-                for lon in np.arange(lon_domain[0], lon_domain[1]+0.25, 0.25): 
-                    running_main_algorithm = True
+            # Store as lists (each is really a list of lists)
+            ms_match_list = ms_match_df['mirror_step'].to_list()
+            xt_match_list = geoscf_grouping['xtrack'].apply(list).to_list()
+            # These should be lists of floats
+            lat_list = ms_match_df['nearest_geoscf_latitude'].to_list()
+            lon_list = ms_match_df['nearest_geoscf_longitude'].to_list()
+            # Store the number of GEOS-CF groups
+            N_groups = len(lat_list)
 
-                    if shapely.geometry.Point(lon, lat).within(field_of_regard):
-                        try:
-                            # Round to 2 decimals. TEMPO data should already be rounded
-                            lat = np.round(lat, decimals=2)
-                            lon = np.round(lon, decimals=2)
+            for grp in range(N_groups):
+                running_main_algorithm = True
 
-                            ms_mesh, xt_mesh = np.meshgrid(np.arange(scan_ds.mirror_step.size), np.arange(scan_ds.xtrack.size), indexing='ij')
+                ms_match = ms_match_list[grp]
+                xt_match = xt_match_list[grp]
+                lat = lat_list[grp]
+                lon = lon_list[grp]
 
-                            # Locate the matching indices for mirror_step and xtrack
-                            prior_match_condition = (scan_ds['nearest_geoscf_latitude'].data == lat) & (scan_ds['nearest_geoscf_longitude'].data == lon)
-                            prior_match_condition = prior_match_condition & ~scan_ds['BadGeoMask'].data
-                            ms_match = ms_mesh[prior_match_condition]
-                            xt_match = xt_mesh[prior_match_condition]
+                if len(xt_match) == 0:
+                    continue
 
-                            if len(xt_match) == 0:
-                                continue
+                try:
+                    # Define a subset of scan_ds using the matched pixels
+                    for v in subset_vars:
+                        # Slice will reduce scalar variables to 1D [pixel,] and vertically-resolved variables to 2D [pixel, swt_level]
+                        subset_ds = scan_ds[v].data[ms_match, xt_match]
 
-                            # Prepare information for recursive update
-                            # The dimension match arrays are updated to remove any pixels with critical issues (i.e. missing AMF or VCD)
-                            aru_args, ms_match_filt, xt_match_filt = prepare_for_update(scan_ds, prior_match_condition, ms_match, xt_match, n_swt_levels, N_updates, sw_var, "update_quality_flags_{}".format(mode))
+                    # Prepare information for recursive update
+                    # The dimension match arrays are updated to remove any pixels with critical issues (i.e. missing AMF or VCD)
+                    aru_args, ms_match_filt, xt_match_filt = prepare_for_update(subset_ds, ms_match, xt_match, n_updates=N_updates, sw_var=sw_var, uqf_var="update_quality_flags_{}".format(mode))
 
-                            ########################
-                            # Perform the AMF update
-                            # In prepare_for_update, we determined if there are any good pixels
-                            if aru_args['good_pixels'].size == 0:
-                                if len(ms_match_filt) == 0:
-                                    # If we also have no pixels to work with at all, move on from this prior
-                                    continue
+                    ########################
+                    # Perform the AMF update
+                    # In prepare_for_update, we determined if there are any good pixels
+                    if aru_args['good_pixels'].size == 0:
+                        if len(ms_match_filt) == 0:
+                            # If we also have no pixels to work with at all, move on from this prior
+                            continue
 
-                                else:
-                                    # Otherwise, calculate values of AMF and VCD for the "initial" step,
-                                    # even though we have no good pixels to update the prior
-                                    apriori_partial_columns, trop_amfs, retrieved_trop_vcd, iteration_record, vcd_iter_diff, portion_free_trop, removed_ft_in_practice, retrieved_over_apriori_gridcell, retrieved_model_mismatch_flag = amf_recursive_update_no_good_pixels(**aru_args)
+                        else:
+                            # Otherwise, calculate values of AMF and VCD for the "initial" step,
+                            # even though we have no good pixels to update the prior
+                            apriori_partial_columns, trop_amfs, retrieved_trop_vcd, iteration_record, vcd_iter_diff, portion_free_trop, removed_ft_in_practice, retrieved_over_apriori_gridcell, retrieved_model_mismatch_flag = amf_recursive_update_no_good_pixels(**aru_args)
 
-                            else:
-                                # If we do have good pixels, run the full recursive update with changes to the 
-                                # prior at each iteration
-                                apriori_partial_columns, trop_amfs, retrieved_trop_vcd, iteration_record, vcd_iter_diff, portion_free_trop, removed_ft_in_practice, retrieved_over_apriori_gridcell, retrieved_model_mismatch_flag  = amf_recursive_update(**aru_args)
-                            ########################
+                    else:
+                        # If we do have good pixels, run the full recursive update with changes to the 
+                        # prior at each iteration
+                        apriori_partial_columns, trop_amfs, retrieved_trop_vcd, iteration_record, vcd_iter_diff, portion_free_trop, removed_ft_in_practice, retrieved_over_apriori_gridcell, retrieved_model_mismatch_flag  = amf_recursive_update(**aru_args)
+                    ########################
 
-                            # Rearrange axes so that the iteration dimension is after the pixel dimension
-                            apriori_partial_columns = np.moveaxis(apriori_partial_columns, [0, 1, 2], [1, 0, 2])
-                            trop_amfs = trop_amfs.T
-                            retrieved_trop_vcd = retrieved_trop_vcd.T
-                            vcd_iter_diff = vcd_iter_diff.T
+                    # Rearrange axes so that the iteration dimension is after the pixel dimension
+                    apriori_partial_columns = np.moveaxis(apriori_partial_columns, [0, 1, 2], [1, 0, 2])
+                    trop_amfs = trop_amfs.T
+                    retrieved_trop_vcd = retrieved_trop_vcd.T
+                    vcd_iter_diff = vcd_iter_diff.T
 
-                            # To evaluate ability of observation to update the prior, we can consider
-                            # what percentange of the model pixel was observed with good quality
-                            # Compute model area as a trapezoid
-                            top_length = great_circle_distance(lat + 0.125, lon - 0.125, lat + 0.125, lon + 0.125, units='m', float_mode=True)
-                            bottom_length = great_circle_distance(lat - 0.125, lon - 0.125, lat - 0.125, lon + 0.125, units='m', float_mode=True)
-                            height = great_circle_distance(lat - 0.125, lon, lat + 0.125, lon, units='m')
-                            model_area = ((top_length + bottom_length) / 2) * height
+                    # To evaluate ability of observation to update the prior, we can consider
+                    # what percentange of the model pixel was observed with good quality
+                    # Compute model area as a trapezoid
+                    top_length = great_circle_distance(lat + 0.125, lon - 0.125, lat + 0.125, lon + 0.125, units='m', float_mode=True)
+                    bottom_length = great_circle_distance(lat - 0.125, lon - 0.125, lat - 0.125, lon + 0.125, units='m', float_mode=True)
+                    height = great_circle_distance(lat - 0.125, lon, lat + 0.125, lon, units='m')
+                    model_area = ((top_length + bottom_length) / 2) * height
 
-                            coverage_of_model_pixel_value = np.sum(aru_args['pixel_area'][aru_args['good_pixels']]) / model_area
+                    coverage_of_model_pixel_value = np.sum(aru_args['pixel_area'][aru_args['good_pixels']]) / model_area
 
-                            # Reconstruct data into the [mirror_step, xtrack] format
-                            for p in range(len(ms_match_filt)):
-                                ms = ms_match_filt[p]
-                                xt = xt_match_filt[p]
-                                
-                                no2_partial_columns_updated[ms, xt, :, :] = apriori_partial_columns[p, :, :] # [pixel, iteration, lev]
-                                tropospheric_amf_updated[ms, xt, :] = trop_amfs[p, :] # [pixel, iteration]
-                                no2_tropospheric_vcd_updated[ms, xt, :] = retrieved_trop_vcd[p, :]
-                                vcd_iteration_differences[ms, xt, :] = vcd_iter_diff[p, :] # [pixel, iteration]
-                                coverage_of_model_pixel[ms, xt] = coverage_of_model_pixel_value
-                                proportion_free_troposphere[ms, xt] = portion_free_trop
-                                removed_free_troposphere_in_practice[ms, xt, :] = removed_ft_in_practice
-                                retrieved_over_apriori_gridcell_arr[ms, xt] = retrieved_over_apriori_gridcell
-                                retrieved_model_mismatch_flag_arr[ms, xt] = retrieved_model_mismatch_flag
+                    # Reconstruct data into the [mirror_step, xtrack] format
+                    for p in range(len(ms_match_filt)):
+                        ms = ms_match_filt[p]
+                        xt = xt_match_filt[p]
+                        
+                        no2_partial_columns_updated[ms, xt, :, :] = apriori_partial_columns[p, :, :] # [pixel, iteration, lev]
+                        tropospheric_amf_updated[ms, xt, :] = trop_amfs[p, :] # [pixel, iteration]
+                        no2_tropospheric_vcd_updated[ms, xt, :] = retrieved_trop_vcd[p, :]
+                        vcd_iteration_differences[ms, xt, :] = vcd_iter_diff[p, :] # [pixel, iteration]
+                        coverage_of_model_pixel[ms, xt] = coverage_of_model_pixel_value
+                        proportion_free_troposphere[ms, xt] = portion_free_trop
+                        removed_free_troposphere_in_practice[ms, xt, :] = removed_ft_in_practice
+                        retrieved_over_apriori_gridcell_arr[ms, xt] = retrieved_over_apriori_gridcell
+                        retrieved_model_mismatch_flag_arr[ms, xt] = retrieved_model_mismatch_flag
 
-                                # Change units back from mol/m^2 to molecules/cm^2
-                                no2_partial_columns_updated[ms, xt, :, :] = no2_partial_columns_updated[ms, xt, :, :] * 6.022e+19
-                                no2_tropospheric_vcd_updated[ms, xt, :] = no2_tropospheric_vcd_updated[ms, xt, :] * 6.022e+19
-                                removed_free_troposphere_in_practice[ms, xt, :] = removed_free_troposphere_in_practice[ms, xt, :] * 6.022e+19
+                        # Change units back from mol/m^2 to molecules/cm^2
+                        no2_partial_columns_updated[ms, xt, :, :] = no2_partial_columns_updated[ms, xt, :, :] * 6.022e+19
+                        no2_tropospheric_vcd_updated[ms, xt, :] = no2_tropospheric_vcd_updated[ms, xt, :] * 6.022e+19
+                        removed_free_troposphere_in_practice[ms, xt, :] = removed_free_troposphere_in_practice[ms, xt, :] * 6.022e+19
 
-                                # 2025-04-24: Added boundary layer prior so that user can reconstruct the prior from the original gas profile and boundary_layer_idnex
-                                # even if they are lacking the updated gas_profile
-                                no2_boundary_layer_prior_updated[ms, xt, :] = np.sum(
-                                                                                    no2_partial_columns_updated[ms, xt, :, :(scan_ds.boundary_layer_index.data[ms, xt]+1)], 
-                                                                                    axis=1
-                                                                                    ) # molecules/cm^2
+                        # 2025-04-24: Added boundary layer prior so that user can reconstruct the prior from the original gas profile and boundary_layer_idnex
+                        # even if they are lacking the updated gas_profile
+                        no2_boundary_layer_prior_updated[ms, xt, :] = np.sum(
+                                                                            no2_partial_columns_updated[ms, xt, :, :(scan_ds.boundary_layer_index.data[ms, xt]+1)], 
+                                                                            axis=1
+                                                                            ) # molecules/cm^2
 
-                        except Exception as e:
-                            debug_mode = True
-                            if debug_mode:
-                                raise e
-                            
-                            else:
-                                print('Issue performing update on this prior')
+                except Exception as e:
+                    debug_mode = True
+                    if debug_mode:
+                        raise e
+                    
+                    else:
+                        print('Issue performing update on this prior')
 
 
             # Store the new values in the dataset
@@ -961,7 +995,8 @@ def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save
             scan_ds = prune_dataset(scan_ds, update_modes, remove_originals=True)
 
         global_attrs = {
-            "Signal_Derived_Retrieval__commit": git_commit
+            "Signal_Derived_Retrieval__commit": git_commit,
+            "processing_script": "amf_update_one_scan.py"
         }
 
         scan_ds = scan_ds.assign_attrs(global_attrs)

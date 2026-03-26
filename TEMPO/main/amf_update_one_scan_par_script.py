@@ -1,7 +1,7 @@
 #### amf_update_one_scan_par_script.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2026-03-23
+# Last changed: 2026-03-26
 # Location: Signal_Derived_Retrieval/TEMPO/main
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -131,7 +131,12 @@ def save_partial_ds():
 
 try:
     # Set some options
-    ecf_threshold = 0.1
+    # Maximum allowed effective cloud fraction
+    ecf_max = 0.1
+    # Maximum allowed solar zenith angle
+    sza_max = 70
+    # Maximum allowed snow/ice fraction
+    sif_max = 0
 
     if pblh.lower() == 'hrrr':
         constant_boundary_layer_height = False
@@ -1131,7 +1136,7 @@ try:
             # since set_quality_flags is expecting this to be 1D
 
         # Now just call the normal function with the precalculated values for nonzero_amf_calc
-        scan_ds = set_quality_flags(scan_ds, update_mode=mode, nonzero_amf_calc=nonzero_amf_calc, ecf_threshold=ecf_threshold)
+        scan_ds = scan_ds = set_quality_flags(scan_ds, update_mode=mode, ecf_max=ecf_max, sza_max=sza_max, sif_max=sif_max)
 
         if mode != "Standard":
             dview.execute('del scattering_weights')
@@ -1203,6 +1208,7 @@ try:
 
         # Store the names of variables needed for the algorithm
         subset_vars = [
+            'update_quality_flags_{}'.format(mode),
             'gas_profile',
             'amf_troposphere',
             'vertical_column_troposphere',
@@ -1210,12 +1216,8 @@ try:
             'boundary_layer_index',
             'model_no2_boundary_layer_vcd',
             'model_no2_tropospheric_vcd',
-            'main_data_quality_flag',
             sw_var,
-            'eff_cloud_fraction',
-            'solar_zenith_angle',
             'area',
-            'snow_ice_fraction',
             'TemperatureCorrection',
         ]
 
@@ -1274,7 +1276,7 @@ try:
         # On each engine, import the functions which are going to be called in the main_algorithm_loop
         dview.execute("import numpy as np")
         dview.execute("import pandas as pd")
-        dview.execute("from functions_par.prepare_for_update_par import prepare_for_update_par")
+        dview.execute("from functions.prepare_for_update import prepare_for_update")
         dview.execute("from functions.amf_recursive_update_sf import amf_recursive_update, amf_recursive_update_no_good_pixels, amf_calculator, mismatch_check")
         dview.execute("from functions.great_circle_distance import great_circle_distance")
 
@@ -1296,17 +1298,7 @@ try:
                 try:
                     # Prepare information for recursive update
                     # The dimension match arrays are updated to remove any pixels with critical issues (i.e. missing AMF or VCD)
-                    aru_args, ms_match_filt, xt_match_filt, quality_df = prepare_for_update_par(subset_ds, ms_match, xt_match, n_swt_levels, N_updates, sw_var)
-
-                    ## Quality flags (bit-array)
-                    # Flip so that the most severe issues are at the earlier bit positions 
-                    quality_df = quality_df[quality_df.columns[::-1]]
-
-                    bit_sign_series = pd.Series(np.tile('0b', len(quality_df)), dtype=str)
-                    quality_series = bit_sign_series.str.cat(quality_df)
-                    quality_series_int = quality_series.apply(lambda x: int(x, 2))
-
-                    update_quality_flags = quality_series_int.loc[:].to_numpy()
+                    aru_args, ms_match_filt, xt_match_filt = prepare_for_update(subset_ds, ms_match, xt_match, n_updates=N_updates, sw_var=sw_var, uqf_var="update_quality_flags_{}".format(mode))
 
                     ########################
                     # Perform the AMF update
@@ -1349,7 +1341,6 @@ try:
                     subset_results['xt_match'] = xt_match
                     subset_results['ms_match_filt'] = ms_match_filt
                     subset_results['xt_match_filt'] = xt_match_filt
-                    subset_results['update_quality_flags'] = update_quality_flags
                     subset_results['apriori_partial_columns'] = apriori_partial_columns
                     subset_results['trop_amfs'] = trop_amfs
                     subset_results['retrieved_trop_vcd'] = retrieved_trop_vcd
@@ -1385,12 +1376,6 @@ try:
                 subset_results = subset_results_list[i_subset] # dict
 
                 # Reconstruct data into the [mirror_step, xtrack] format
-                # Most of the variables use "ms_match_filt" which only includes calculation quality pixels
-                # However, the update_quality_flags variable uses "ms_match" so loop over that seperately
-                for p in range(len(subset_results['ms_match'])):
-                    ms = subset_results['ms_match'][p]
-                    xt = subset_results['xt_match'][p]
-                    update_quality_flags[ms, xt] = subset_results['update_quality_flags'][p]
 
                 # Now go through the variables for calculation quality pixels
                 for p in range(len(subset_results['ms_match_filt'])):
@@ -1485,16 +1470,6 @@ try:
                                                             }
         )
 
-        scan_ds['update_quality_flags_{}'.format(mode)] = (
-                                                            ['mirror_step', 'xtrack'],
-                                                            update_quality_flags,
-                                                            {
-                                                                'description': 'bit flag indicating quality of pixel for update algorithm',
-                                                                'bit_positions': np.array([12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0], dtype=int),
-                                                                'bit_meanings': ['nonzero_snow_ice', 'invalid_pixel_area', 'bl_index_above_tp', 'bl_index_unknown', 'model_bl_vcd_unknown', 'high_sza', 'high_eff_cloud_fraction', 'main_data_quality_above_0', 'calculated_trop_amf_invalid', 'scattering_weights_bad', 'trop_index_unknown', 'original_trop_vcd_invalid', 'original_trop_amf_invalid']
-                                                            }
-        )
-
         scan_ds['model_no2_boundary_layer_vcd_updated_{}'.format(mode)] = (
                                                                             ['mirror_step', 'xtrack', 'iteration'],
                                                                             no2_boundary_layer_prior_updated,
@@ -1586,7 +1561,8 @@ try:
             scan_ds = prune_dataset(scan_ds, update_modes, remove_originals=True)
 
         global_attrs = {
-            "Signal_Derived_Retrieval__commit": git_commit
+            "Signal_Derived_Retrieval__commit": git_commit,
+            "processing_script": "amf_update_one_scan_par_script.py"
         }
 
         scan_ds = scan_ds.assign_attrs(global_attrs)
