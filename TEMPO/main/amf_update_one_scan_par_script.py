@@ -135,6 +135,7 @@ try:
 
     if pblh.lower() == 'hrrr':
         constant_boundary_layer_height = False
+        use_provided_pblh = False
 
         if hrrr_grib is None:
             raise Exception("If running in 'hrrr' mode, path to grib data must be pass as 'hrrr_grib' argument")
@@ -157,6 +158,7 @@ try:
 
     else:
         constant_boundary_layer_height = True
+        use_provided_pblh = False
         try:
             pblh_value = float(pblh)
             if pblh_value < 10:
@@ -179,6 +181,8 @@ try:
 
     if 'BEHR Name' in list(scan_df.columns):
         grans_with_behr = len(scan_df['BEHR Name'].dropna())
+    else:
+        grans_with_behr = 0
 
     granule_dict = {}
 
@@ -641,7 +645,7 @@ try:
 
     # SB 2026-03-19
     # We now need to account for V04 product where the GEOS-CF derived PBLH is included
-    if int(scan_collection[:1]) >= 4:
+    if int(scan_collection[1:]) >= 4:
         # Rename the column from "pbl_height" so it's clear it is from GEOS-CF
         scan_ds = scan_ds.rename({'pbl_height': 'boundary_layer_height_geoscf'})
 
@@ -659,7 +663,7 @@ try:
         scan_ds['sdr_boundary_layer_height'] = (['mirror_step', 'xtrack'], nearest_pblh, {'units': 'm', 'description': pblh_var_description})
 
     elif use_provided_pblh:
-        if int(scan_collection[:1]) < 4:
+        if int(scan_collection[1:]) < 4:
             raise Exception("Cannot use provided boundary layer height with this version of the TEMPO product")
         
         pblh_var_description = 'boundary layer height derived from GEOS-CF (from standard retrieval)'
@@ -1076,7 +1080,7 @@ try:
         # Set the scattering_weight variable
         if mode == "Standard":
             sw_var = 'scattering_weights'
-            scattering_weights = scan_ds[sw_var].data
+            scattering_weights = scan_ds[sw_var].data.copy()
 
             # SB 2025-03-25: My read of the TEMPO PUM is that the provided scattering weights do not
             # include the temperature correction factors. As of this date, the calculation of custom
@@ -1127,7 +1131,7 @@ try:
             # since set_quality_flags is expecting this to be 1D
 
         # Now just call the normal function with the precalculated values for nonzero_amf_calc
-        scan_ds = set_quality_flags(scan_ds, mode, nonzero_amf_calc, ecf_threshold=ecf_threshold)
+        scan_ds = set_quality_flags(scan_ds, update_mode=mode, nonzero_amf_calc=nonzero_amf_calc, ecf_threshold=ecf_threshold)
 
         if mode != "Standard":
             dview.execute('del scattering_weights')
@@ -1587,7 +1591,7 @@ try:
 
         scan_ds = scan_ds.assign_attrs(global_attrs)
 
-        from finalize_product_file import finalize_product_file
+        from functions.finalize_product_file import finalize_product_file
         # Note that the default in this function is to save iteration 1 as the SDR value
         finalize_product_file(
                                 processing_dataset=scan_ds, 

@@ -1,7 +1,7 @@
 #### prepare_for_update_par.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2025-08-11
+# Last changed: 2026-03-25
 # Location: Signal_Derived_Retrieval/TEMPO/main/functions_par
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -52,7 +52,7 @@ def prepare_for_update_par(subset_ds: dict, ms_match, xt_match, n_swt_levels: in
     model_boundary_layer_vcd /= 6.022e19 # mol m^-2
     model_tropospheric_vcd = subset_ds['model_no2_tropospheric_vcd']
     model_tropospheric_vcd /= 6.022e19 # mol m^-2
-    scattering_weights = subset_ds[sw_var]
+    scattering_weights = subset_ds[sw_var].copy()
     data_quality_flag = subset_ds['main_data_quality_flag']
     eff_cloud_fraction = subset_ds['eff_cloud_fraction']
     sza = subset_ds['solar_zenith_angle']

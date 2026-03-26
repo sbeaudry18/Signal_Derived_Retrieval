@@ -1,7 +1,7 @@
 #### set_quality_flags.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2026-03-19
+# Last changed: 2026-03-25
 # Location: Signal_Derived_Retrieval/TEMPO/main/functions
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -41,7 +41,7 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None, ec
     trop_index = scan_ds['geoscf_tropopause_layer_index'].data
     boundary_layer_index = scan_ds['boundary_layer_index'].data
     model_boundary_layer_vcd = scan_ds['model_no2_boundary_layer_vcd'].data
-    scattering_weights = scan_ds[sw_var].data
+    scattering_weights = scan_ds[sw_var].data.copy()
     data_quality_flag = scan_ds['main_data_quality_flag'].data
     eff_cloud_fraction = scan_ds['eff_cloud_fraction'].data
     sza = scan_ds['solar_zenith_angle'].data

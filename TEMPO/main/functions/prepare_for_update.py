@@ -1,7 +1,7 @@
 #### prepare_for_update.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2025-10-15
+# Last changed: 2026-03-25
 # Location: Signal_Derived_Retrieval/TEMPO/main/functions
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -58,7 +58,7 @@ def prepare_for_update(scan_ds: xr.Dataset, prior_match_condition : np.ndarray, 
     model_boundary_layer_vcd /= 6.022e19 # mol m^-2
     model_tropospheric_vcd = scan_ds['model_no2_tropospheric_vcd'].data[prior_match_condition]
     model_tropospheric_vcd /= 6.022e19 # mol m^-2
-    scattering_weights = scan_ds[sw_var].data[prior_match_condition]
+    scattering_weights = scan_ds[sw_var].data[prior_match_condition].copy()
     pixel_area = scan_ds['area'].data[prior_match_condition]
 
     if sw_var == 'scattering_weights':

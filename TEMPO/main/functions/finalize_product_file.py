@@ -46,7 +46,10 @@ def finalize_product_file(processing_dataset, product_dir, sdr_version, scan_num
         else:
             raise ValueError("'processing_dataset' is a string but convert_from_behr is set to False. Pass an xarray Dataset instead")
 
-    elif not isinstance(processing_dataset, xr.Dataset):
+    elif isinstance(processing_dataset, xr.Dataset):
+        scan_ds = processing_dataset
+
+    else:
         raise ValueError("'processing_dataset' must be a path leading to a netCDF file or an xarray Dataset")
     
     ###################
@@ -242,7 +245,7 @@ def finalize_product_file(processing_dataset, product_dir, sdr_version, scan_num
     start_time = gran_id_pat.match(lowest_gran_id).group(1)
 
     # Assemble new file name
-    product_name = "SDR-TEMPO_NO2_L2_{}_{}_{}_S{}_{}.nc".format(
+    product_name = "SDR-TEMPO_NO2_L2_{}_{}_{}_{}_{}.nc".format(
         sdr_version,
         start_time,
         end_time,

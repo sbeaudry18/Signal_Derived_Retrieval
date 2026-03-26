@@ -1,7 +1,7 @@
 #### amf_update_one_scan.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2026-03-23
+# Last changed: 2026-03-24
 # Location: Signal_Derived_Retrieval/TEMPO/main
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -71,7 +71,7 @@ def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save
     from functions.amf_recursive_update_sf import amf_recursive_update
     from functions.amf_recursive_update_sf import amf_recursive_update_no_good_pixels
     from functions.build_geobounds_str import build_geobounds_str
-    from finalize_product_file import finalize_product_file
+    from functions.finalize_product_file import finalize_product_file
 
     running_main_algorithm = False
     scan_ds_created = False
@@ -106,6 +106,7 @@ def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save
 
         if pblh.lower() == 'hrrr':
             constant_boundary_layer_height = False
+            use_provided_pblh = False
 
             if hrrr_grib is None:
                 raise Exception("If running in 'hrrr' mode, path to grib data must be pass as 'hrrr_grib' argument")
@@ -128,6 +129,7 @@ def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save
 
         else:
             constant_boundary_layer_height = True
+            use_provided_pblh = False
             try:
                 pblh_value = float(pblh)
                 if pblh_value < 10:
@@ -144,6 +146,8 @@ def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save
 
         if 'BEHR Name' in list(scan_df.columns):
             grans_with_behr = len(scan_df['BEHR Name'].dropna())
+        else:
+            grans_with_behr = 0
 
         granule_dict = {}
 
@@ -310,7 +314,7 @@ def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save
 
         # SB 2026-03-19
         # We now need to account for V04 product where the GEOS-CF derived PBLH is included
-        if int(scan_collection[:1]) >= 4:
+        if int(scan_collection[1:]) >= 4:
             # Rename the column from "pbl_height" so it's clear it is from GEOS-CF
             scan_ds = scan_ds.rename({'pbl_height': 'boundary_layer_height_geoscf'})
 
@@ -328,7 +332,7 @@ def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save
             scan_ds['sdr_boundary_layer_height'] = (['mirror_step', 'xtrack'], nearest_pblh, {'units': 'm', 'description': pblh_var_description})
 
         elif use_provided_pblh:
-            if int(scan_collection[:1]) < 4:
+            if int(scan_collection[1:]) < 4:
                 raise Exception("Cannot use provided boundary layer height with this version of the TEMPO product")
             
             pblh_var_description = 'boundary layer height derived from GEOS-CF (from standard retrieval)'
@@ -651,7 +655,7 @@ def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save
             if verbosity > 2:
                 print('----> {}'.format(mode))
 
-            scan_ds = set_quality_flags(scan_ds, mode, ecf_threshold=ecf_threshold)
+            scan_ds = set_quality_flags(scan_ds, update_mode=mode, ecf_threshold=ecf_threshold)
 
         ############################################
         #### Run amf_recursive_update algorithm ####
