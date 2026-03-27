@@ -1,7 +1,7 @@
 #### amf_update_one_scan_par_script.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2026-03-26
+# Last changed: 2026-03-27
 # Location: Signal_Derived_Retrieval/TEMPO/main
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -13,7 +13,7 @@ Main function of the signal-derived retrieval, parallelized version. Takes TEMPO
 Parameters
 ----------
 scan_df : pd.DataFrame
-    DataFrame with column 'Name' and 'Granule' for each pickle file
+    DataFrame with column 'Name' and 'Granule' for each TEMPO observation
 tempo_dir_head : str
     TEMPO directory head 
 vars_path : str
@@ -22,22 +22,22 @@ constants_path : str
     path to constant values
 save_path : str
     location to save the completed dataset
+sdr_version : str
+    Version of the signal-derived retrieval
 minimize_output_size : bool
     if True, will remove vertically-resolved variables when able to to reduce size of output dataset
 full_FOR : bool
     whether to process for the full field of regard
-num_engines : int
-    the number of engines to distribute work across for parallelized tasks
 N_updates : int (Optional)
     number of iterations to perform
 pblh : float or str (Optional)
-    in meters, height to use for planetary boundary layer or 'hrrr' to pull boundary layer height from reanalysis
+    in meters, height to use for planetary boundary layer, or 'hrrr' to pull boundary layer height from reanalysis, or 'geoscf' to use values in TEMPO product
 hrrr_grib : str (Optional) 
     path to HRRR grib files
 save_path_partial : str (Optional)
     path to save partially completed scan_ds when the function fails to finish
 git_commit : str (Optional)
-    the commit of Singal_Derived_Retrieval repository used
+    the commit of Signal_Derived_Retrieval repository used
 verbosity : int (Optional)
     controls print statements for debugging
 '''
@@ -46,7 +46,7 @@ import argparse
 
 # Define arguments for the script
 parser = argparse.ArgumentParser()
-parser.add_argument('--scan_df_file', type=str)
+parser.add_argument('--scan_files', type=str)
 parser.add_argument('--tempo_dir_head', type=str)
 parser.add_argument('--vars_path', type=str)
 parser.add_argument('--constants_path', type=str)
@@ -66,7 +66,7 @@ parser.add_argument('--verbosity', type=int)
 args = vars(parser.parse_args())
 
 # Parse arguments 
-scan_df_file = args['scan_df_file']
+scan_files = args['scan_files']
 tempo_dir_head = args['tempo_dir_head']
 vars_path = args['vars_path']
 constants_path = args['constants_path']
@@ -82,20 +82,31 @@ save_path_partial = args['save_path_partial']
 git_commit = args['git_commit']
 verbosity = int(args['verbosity'])
 
+# Unpack scan_files
+import re
+scan_files_pat = re.compile(r'scan_df: (scan_\d{3}_df\.csv) save_options: (scan_\d{3}_save_options\.pickle)')
+
 # Open DataFrame with the TEMPO files to be used
+scan_df_file = scan_files_pat.match(scan_files).group(1)
 import pandas as pd
 scan_df = pd.read_csv(scan_df_file)
 scan_df.set_index('Granule', inplace=True)
 
+# Open pickle file with the save options
+save_options_file = scan_files_pat.match(scan_files).group(2)
+import pickle
+with open(save_options_file, 'rb') as handle:
+    save_options = pickle.load(handle)
+name_w_commit = save_options['name_w_commit']
+name_w_proctime = save_options['name_w_proctime']
+
 # Import remaining modules
 import os
-import re
 from datetime import datetime
 from datetime import timedelta
 import numpy as np
 import xarray as xr
 import shapely
-import pickle
 import warnings
 import ipyparallel as ipp
 
@@ -758,6 +769,8 @@ try:
             # Scatter data
             ms_values = ms_during_h.index
             if not np.all(np.diff(ms_values) == 1):
+                for ms in ms_values:
+                    print(ms)
                 raise Exception('mirror_step values should monotonically increase')
 
             num_values = len(ms_during_h)
@@ -1272,6 +1285,7 @@ try:
         dview.push(dict(n_swt_levels=int(72)))
         dview.push(dict(N_updates=N_updates))
         dview.push(dict(sw_var=sw_var))
+        dview.push(dict(mode=mode))
 
         # On each engine, import the functions which are going to be called in the main_algorithm_loop
         dview.execute("import numpy as np")
@@ -1568,6 +1582,7 @@ try:
         scan_ds = scan_ds.assign_attrs(global_attrs)
 
         from functions.finalize_product_file import finalize_product_file
+        from functions.name_product_file import name_product_file
         # Note that the default in this function is to save iteration 1 as the SDR value
         finalize_product_file(
                                 processing_dataset=scan_ds, 
@@ -1575,7 +1590,9 @@ try:
                                 sdr_version=sdr_version, 
                                 scan_num=scan, 
                                 geo_scope=geobounds_str, 
-                                product_itr = int(1)
+                                product_itr = int(1),
+                                name_w_commit=name_w_commit, 
+                                name_w_proctime=name_w_proctime
         )
 
     # SB 2026-03-22: The code below was used to save the output as a "BEHR-RED-TEMPO" file,
@@ -1617,3 +1634,5 @@ except Exception as e:
 
     if scan_ds_created:
         save_partial_ds()
+
+    raise e

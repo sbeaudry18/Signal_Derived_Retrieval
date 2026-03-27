@@ -3,7 +3,7 @@
 #### SDR-director-simple.sh ####
 
 # Author: Sam Beaudry
-# Last changed: 2026-03-23
+# Last changed: 2026-03-27
 # Location: Signal_Derived_Retrieval/TEMPO/main
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -17,7 +17,7 @@ n_workers=1
 start=$SECONDS
 
 # Job time limit
-timelimhours=23
+timelimhours=2
 timelimseconds=$(( timelimhours * 3600 ))
 buffertime=3600
 
@@ -26,8 +26,8 @@ current_commit=$(git log -1 --pretty=format:"%H")
 
 # Parameters ####################################
 # For dates, use format YYYYMMDD
-startdate="20240401"
-enddate="20240930"
+startdate="20240711"
+enddate="20240831"
 
 # Option to control for either full field of regard (FOR) or partial region
 fullfor=1
@@ -35,7 +35,7 @@ fullfor=1
 scanmin='1'
 scanmax='30'
 
-collection="V03"
+collection="V04"
 sdr_letter="A"
 sdr_version="$collection-$sdr_letter"
 
@@ -43,7 +43,7 @@ sdr_version="$collection-$sdr_letter"
 boundary_layer="hrrr"
 n_updates="2"
 minimize_output_size=1 # if True, will remove vertically-resolved variables when able to
-reprocess_if_exists=1 # if True, will process scan even if an equivalent file already exists in RESULTS
+reprocess_if_exists=0 # if True, will process scan even if an equivalent file already exists in RESULTS
 
 # Instrument
 instrument="TEMPO"
@@ -53,9 +53,29 @@ instrument="TEMPO"
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 source $SCRIPT_DIR/../../constants/sdr_paths.config
 
+# Check paths
+if ! [ -d $SDR ]; then
+    echo "Directory for SDR does not exist: $SDR";
+    exit 1
+fi
+
+if ! [ -d $TEMPO ]; then
+    echo "Directory for TEMPO does not exist: $TEMPO";
+    exit 1
+fi
+
+if ! [ -d $HRRR ]; then
+    echo "Directory for HRRR does not exist: $HRRR";
+    exit 1
+fi
+
+if ! [ -d $SDR_FILES ]; then
+    echo "Directory for SDR_FILES does not exist: $SDR_FILES";
+    exit 1
+fi
+
 # Directories for transient (temporary) files
 save_path_partial="$SDR/partially_completed_datasets"
-
 
 # Constant files
 CONSTANTS="$SDR/constants"
@@ -64,16 +84,21 @@ RESULTS=$SDR_FILES
  
 # Job trackings
 logbook="$SDR/logbook"
+if ! [ -d $logbook ]; then
+    echo "Making logbook directory for python script outputs: $logbook"
+    mkdir $logbook
+fi
 ###################################################
 
 # Configure Environment ###########################
 # https://stackoverflow.com/questions/34534513/calling-conda-source-activate-from-bash-script
-...
+module load anaconda3
+source activate nc_read
 
 ###################################################
 
 # Loop ############################################
-python -u create_date_range.py $startdate $enddate > "$logbook/create_date_range_latest.txt"
+python create_date_range.py $startdate $enddate
 
 daterange_file="daylist_transient.txt"
 while read -r line; do
@@ -89,17 +114,20 @@ while read -r line; do
 
     # Parallel only
     if [ $n_workers -gt 1 ]; then
-        scan_df_file_list="scan_df_file_list_transient.txt"
-        while read -r entry; do
-            scan_df_file="$entry"
-            scan_num=${scan_df_file:5:3}
-            echo "    Scan $scan_num"
-            
-            python -u amf_update_one_scan_par_script.py --scan_df_file $scan_df_file --tempo_dir_head $TEMPO --vars_path $omi_tropomi_vars_path --constants_path $CONSTANTS --save_path $RESULTS --sdr_version $sdr_version --minimize_output_size $minimize_output_size --full_FOR $fullfor --num_engines $n_workers --N_updates $n_updates --pblh $boundary_layer --hrrr_grib $HRRR --save_path_partial $save_path_partial --git_commit $current_commit --verbosity "5" > "$logbook/amf_update_one_scan_${current_date}_S${scan_num}.txt"
-
-            rm $scan_df_file
-        done < "$scan_df_file_list"
-        rm $scan_df_file_list
+        scan_file_list="scan_file_list_transient.txt"
+        if [ -f $scan_file_list ]; then
+            while read -r entry; do
+                scan_files="$entry"
+                scan_num=${scan_files:14:3}
+                echo "    Scan $scan_num"
+                
+                python -u amf_update_one_scan_par_script.py --scan_files "$scan_files" --tempo_dir_head $TEMPO --vars_path $omi_tropomi_vars_path --constants_path $CONSTANTS --save_path $RESULTS --sdr_version $sdr_version --minimize_output_size $minimize_output_size --full_FOR $fullfor --num_engines $n_workers --N_updates $n_updates --pblh $boundary_layer --hrrr_grib $HRRR --save_path_partial $save_path_partial --git_commit $current_commit --verbosity "5" > "$logbook/amf_update_one_scan_${current_date}_S${scan_num}.txt"
+    
+                rm ${scan_files:9:15} # removes scan_XXX_df.csv
+                rm ${scan_files:39:28} # removes scan_XXX_save_options.pickle
+            done < "$scan_file_list"
+            rm $scan_file_list
+        fi
     fi
 
     echo "Processing for ${current_date} is finished"

@@ -1,7 +1,7 @@
 #### TEMPO_L2_NO2_on_date.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2026-03-23
+# Last changed: 2026-03-27
 # Location: Signal_Derived_Retrieval/TEMPO/main
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -102,6 +102,7 @@ def TEMPO_L2_NO2_on_date(date_string, tempo_location, collection, vars_path, ful
     # if the DataFrame is empty
     if len(all_possible_files) == 0:
         no_tempo_files = True
+        file_df_filt = pd.DataFrame() # empty DataFrame with length 0
 
     else:
         file_df = pd.DataFrame({'TEMPO Name': all_possible_files, 'TEMPO Location': all_possible_file_locations})

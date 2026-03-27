@@ -7,7 +7,7 @@
 
 ##################################
 
-def finalize_product_file(processing_dataset, product_dir, sdr_version, scan_num, geo_scope, product_itr: int=1, sw_mode: str='Standard', trace_gas: str='NO2', convert_from_behr=False):
+def finalize_product_file(processing_dataset, product_dir, sdr_version, scan_num, geo_scope, product_itr: int=1, sw_mode: str='Standard', trace_gas: str='NO2', convert_from_behr=False, name_w_commit=False, name_w_proctime=False):
     '''
     Takes processing datasets produced by amf_update_one_scan and reformats to be published as a data product
 
@@ -29,6 +29,10 @@ def finalize_product_file(processing_dataset, product_dir, sdr_version, scan_num
         Default NO2. Trace gas of retrieval.
     convert_from_behr : bool
         Default False. If True, pass processing_dataset as a string point to a BEHR-RED-TEMPO result
+    name_w_commit : bool (Optional)
+        if True, will add the Signal_Derived_Retrieval repository commit to the output filename
+    name_w_proctime : bool (Optional)
+        if True, will add the processing time to the output filename
     '''
 
     import numpy as np
@@ -38,6 +42,11 @@ def finalize_product_file(processing_dataset, product_dir, sdr_version, scan_num
     import os
     import re
 
+    try:
+        from name_product_file import name_product_file
+    except ModuleNotFoundError:
+        from functions.name_product_file import name_product_file
+        
     if isinstance(processing_dataset, str):
         if convert_from_behr:
             processing_file_path = processing_dataset
@@ -245,13 +254,17 @@ def finalize_product_file(processing_dataset, product_dir, sdr_version, scan_num
     start_time = gran_id_pat.match(lowest_gran_id).group(1)
 
     # Assemble new file name
-    product_name = "SDR-TEMPO_NO2_L2_{}_{}_{}_{}_{}.nc".format(
-        sdr_version,
-        start_time,
-        end_time,
-        scan_num,
-        geo_scope
-    )
+    if name_w_commit:
+        commit = scan_ds.git_commit
+    else:
+        commit = None
+
+    if name_w_proctime:
+        proc_time = current_time_string
+    else:
+        proc_time = False
+
+    product_name = name_product_file(sdr_version, start_time, end_time, scan_num, geo_scope, commit=commit, proc_time=proc_time)
 
     meas_year = start_time[:4]
     meas_month = start_time[4:6]

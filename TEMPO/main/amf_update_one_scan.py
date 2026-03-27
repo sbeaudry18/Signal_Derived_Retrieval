@@ -7,7 +7,7 @@
 
 ################################
 
-def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save_path, sdr_version, minimize_output_size, full_FOR, N_updates: int=2, pblh=750, hrrr_grib=None, save_path_partial="", git_commit="None", verbosity=5):
+def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save_path, sdr_version, minimize_output_size, full_FOR, N_updates: int=2, pblh=750, hrrr_grib=None, save_path_partial="", git_commit="None", name_w_commit=False, name_w_proctime=False, verbosity=5):
     '''
     Main function of the signal-derived retrieval. Takes TEMPO data, finds boundary layer/free troposphere division, and redistributes prior.
 
@@ -39,6 +39,10 @@ def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save
         path to save partially completed scan_ds when the function fails to finish
     git_commit : str (Optional)
         the commit of Signal_Derived_Retrieval repository used
+    name_w_commit : bool (Optional)
+        if True, will add the Signal_Derived_Retrieval repository commit to the output filename
+    name_w_proctime : bool (Optional)
+        if True, will add the processing time to the output filename
     verbosity : int (Optional)
         controls print statements for debugging
     '''
@@ -49,7 +53,6 @@ def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save
     import numpy as np
     import pandas as pd
     import xarray as xr
-    import shapely
     import pickle
     import warnings
 
@@ -72,10 +75,10 @@ def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save
     from functions.amf_recursive_update_sf import amf_recursive_update_no_good_pixels
     from functions.build_geobounds_str import build_geobounds_str
     from functions.finalize_product_file import finalize_product_file
+    from functions.name_product_file import name_product_file
 
     running_main_algorithm = False
     scan_ds_created = False
-
 
     # Function to save progress if an exception is encountered after preparing scan_ds
     def save_partial_ds():
@@ -753,8 +756,8 @@ def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save
             for grp in range(N_groups):
                 running_main_algorithm = True
 
-                ms_match = ms_match_list[grp]
-                xt_match = xt_match_list[grp]
+                ms_match = np.array(ms_match_list[grp], dtype=int)
+                xt_match = np.array(xt_match_list[grp], dtype=int)
                 lat = lat_list[grp]
                 lon = lon_list[grp]
 
@@ -763,9 +766,10 @@ def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save
 
                 try:
                     # Define a subset of scan_ds using the matched pixels
+                    subset_ds = {}
                     for v in subset_vars:
                         # Slice will reduce scalar variables to 1D [pixel,] and vertically-resolved variables to 2D [pixel, swt_level]
-                        subset_ds = scan_ds[v].data[ms_match, xt_match]
+                        subset_ds[v] = scan_ds[v].data[ms_match, xt_match]
 
                     # Prepare information for recursive update
                     # The dimension match arrays are updated to remove any pixels with critical issues (i.e. missing AMF or VCD)
@@ -1008,7 +1012,9 @@ def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save
                                 sdr_version=sdr_version, 
                                 scan_num=scan, 
                                 geo_scope=geobounds_str, 
-                                product_itr = int(1)
+                                product_itr = int(1),
+                                name_w_commit=name_w_commit, 
+                                name_w_proctime=name_w_proctime
         )
 
     # SB 2026-03-22: The code below was used to save the output as a "BEHR-RED-TEMPO" file,
