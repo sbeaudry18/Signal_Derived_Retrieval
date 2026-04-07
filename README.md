@@ -1,11 +1,8 @@
 # Signal Derived Retrieval (SDR)
 ## Code for updating air mass factors (AMFs) in TEMPO NO<sub>2</sub> retrieval
-<br>
 This repository contains the algorithm for the TEMPO signal-derived retrieval (SDR) described in Beaudry and Cohen (2026). The main processing script is TEMPO/main/amf_update_one_scan.py, which constructs a dataset for the TEMPO scan ("scan_ds"), adds additional variables needed for the SDR, filters pixels by quality (in TEMPO/main/functions/prepare_for_update.py), and then carries out the redistribution of the prior and recalculation of the AMF (in TEMPO/main/functions/amf_recursive_update_sf.py). The TEMPO/main/functions folder contains most of the functions used in amf_update_one_scan.py. A parallel version of this process, amf_update_one_scan_par_script.py, writes these functions into the script for ipyparallel functionality. The output netCDF files are saved as "SDR-TEMPO..." and contain the SDR tropospheric vertical column density (VCD) and "sdr_vertical_column_troposphere". The data filtering and troubleshooting variable is stored as "update_quality_flags"; a flag of 0 indicates a good quality pixel used in the SDR update.
-<br>
 
 ## Required Packages
-<br>
 The algorithm was written with Python version 3.12.3. The following packages are required:
 - numpy
 - pandas
@@ -17,7 +14,6 @@ The algorithm was written with Python version 3.12.3. The following packages are
 - [shapely](https://shapely.readthedocs.io/en/stable/)
 
 ## Running the SDR
-<br>
 1. Clone this repository.
 2. Install the above packages (ideally in a specific environment, e.g. using conda). 
 3. Identify the location of the TEMPO L2 files to be processed. If $TEMPO is the path to these files, they should be sorted as $TEMPO/NO2/L2/{processor_version}/{year}/{mo}/{file}.nc. For example: $TEMPO/NO2/L2/V03/2024/07/TEMPO_NO2_L2_V04_20240711T184349Z_S010G05.nc. The script "move_tempo_files.py" in the "TEMPO/utilites" folder can be called to sort files following this method.
