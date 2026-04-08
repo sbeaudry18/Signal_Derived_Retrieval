@@ -1,49 +1,48 @@
 #### amf_update_one_scan.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2025-10-05
+# Last changed: 2026-03-26
 # Location: Signal_Derived_Retrieval/TEMPO/main
 # Contact: samuel_beaudry@berkeley.edu
 
 ################################
 
-def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_dir_head, vars_path, constants_path, save_path, minimize_output_size, full_FOR, N_updates: int=2, sdr_product: bool=True, pblh=750, hrrr_grib=None, save_path_partial="", git_commit="None", verbosity=5):
+def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save_path, sdr_version, minimize_output_size, full_FOR, N_updates: int=2, pblh=750, hrrr_grib=None, save_path_partial="", git_commit="None", name_w_commit=False, name_w_proctime=False, verbosity=5):
     '''
     Main function of the signal-derived retrieval. Takes TEMPO data, finds boundary layer/free troposphere division, and redistributes prior.
 
     Parameters
     ----------
-    PY_TO_MAT_SUITCASE : str
-        path to directory containing the pickle files from TEMPO_L2_NO2_on_date.py
-    MAT_TO_PY_SUITCASE : str
-        path to directory containing the pickle files from read_main_single.m (allowed to be empty)
     scan_df : pd.DataFrame
-        DataFrame with column 'Name' and 'Granule' for each pickle file
+        DataFrame with column 'Name' and 'Granule' for each TEMPO observation
     tempo_dir_head : str
         TEMPO directory head 
     vars_path : str
         path to the csv file containing TEMPO dataset variable names and locations
     constants_path : str
         path to constant values
-        
     save_path : str
         location to save the completed dataset
+    sdr_version : str
+        Version of the signal-derived retrieval
     minimize_output_size : bool
         if True, will remove vertically-resolved variables when able to to reduce size of output dataset
     full_FOR : bool
         whether to process for the full field of regard
     N_updates : int (Optional)
         number of iterations to perform
-    sdr_product : int (Optional)
-        if True, will store the first iteration as the signal derived product
     pblh : float or str (Optional)
-        in meters, height to use for planetary boundary layer or 'hrrr' to pull boundary layer height from reanalysis
+        in meters, height to use for planetary boundary layer, or 'hrrr' to pull boundary layer height from reanalysis, or 'geoscf' to use values in TEMPO product
     hrrr_grib : str (Optional) 
         path to HRRR grib files
     save_path_partial : str (Optional)
         path to save partially completed scan_ds when the function fails to finish
     git_commit : str (Optional)
         the commit of Signal_Derived_Retrieval repository used
+    name_w_commit : bool (Optional)
+        if True, will add the Signal_Derived_Retrieval repository commit to the output filename
+    name_w_proctime : bool (Optional)
+        if True, will add the processing time to the output filename
     verbosity : int (Optional)
         controls print statements for debugging
     '''
@@ -54,7 +53,6 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
     import numpy as np
     import pandas as pd
     import xarray as xr
-    import shapely
     import pickle
     import warnings
 
@@ -76,10 +74,11 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
     from functions.amf_recursive_update_sf import amf_recursive_update
     from functions.amf_recursive_update_sf import amf_recursive_update_no_good_pixels
     from functions.build_geobounds_str import build_geobounds_str
+    from functions.finalize_product_file import finalize_product_file
+    from functions.name_product_file import name_product_file
 
     running_main_algorithm = False
     scan_ds_created = False
-
 
     # Function to save progress if an exception is encountered after preparing scan_ds
     def save_partial_ds():
@@ -106,8 +105,16 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
 
     try:
         # Set some options
+        # Maximum allowed effective cloud fraction
+        ecf_max = 0.1
+        # Maximum allowed solar zenith angle
+        sza_max = 70
+        # Maximum allowed snow/ice fraction
+        sif_max = 0
+
         if pblh.lower() == 'hrrr':
             constant_boundary_layer_height = False
+            use_provided_pblh = False
 
             if hrrr_grib is None:
                 raise Exception("If running in 'hrrr' mode, path to grib data must be pass as 'hrrr_grib' argument")
@@ -124,8 +131,13 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
             
             from herbie import Herbie
 
+        elif (pblh.lower() == 'geoscf') | (pblh.lower() == 'geos-cf'):
+            constant_boundary_layer_height = False
+            use_provided_pblh = True
+
         else:
             constant_boundary_layer_height = True
+            use_provided_pblh = False
             try:
                 pblh_value = float(pblh)
                 if pblh_value < 10:
@@ -140,59 +152,65 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
         if verbosity > 2:
             print('Synthesizing BEHR and TEMPO data')
 
-        grans_with_behr = len(scan_df['BEHR Name'].dropna())
+        if 'BEHR Name' in list(scan_df.columns):
+            grans_with_behr = len(scan_df['BEHR Name'].dropna())
+        else:
+            grans_with_behr = 0
 
         granule_dict = {}
 
         first_granule = True
         for granule in scan_df.index:
-            # Open TEMPO pickle
-            pickle_name = scan_df.loc[granule, 'TEMPO Name']
-            tempo_pickle_path = '{}/{}'.format(PY_TO_MAT_SUITCASE, pickle_name)
-            
-            with open(tempo_pickle_path, 'rb') as handle:
-                tempo_init_dict = pickle.load(handle)
-            handle.close()        
-
-            # Get dimension bounds
-            ms_min = int(tempo_init_dict['MirrorStepBdy'][0])
-            ms_max = int(tempo_init_dict['MirrorStepBdy'][1])
-            xt_min = int(tempo_init_dict['XTrackBdy'][0])
-            xt_max = int(tempo_init_dict['XTrackBdy'][1])
-            
-            original_file = tempo_init_dict['TEMPOProductID']
+            # Details about the granule
+            tempo_file = scan_df.loc[granule, 'TEMPO Name']
+            original_file_path = os.path.join(scan_df.loc[granule, 'TEMPO Location'], scan_df.loc[granule, 'TEMPO Name'])
             scan = scan_df.loc[granule, 'Scan']
-            # granule = granule
-            
-            date_string = re.search(r'^TEMPO_NO2_L2_V\d{2}_(\d{8})T\d{6}Z_S\d{3}G\d{2}\.nc$', original_file).group(1)
+
+            date_string = re.search(r'^TEMPO_NO2_L2_V\d{2}_(\d{8})T\d{6}Z_S\d{3}G\d{2}\.nc$', tempo_file).group(1)
+            date_of_interest = datetime.strptime(date_string, '%Y%m%d')
+
             year_str = date_string[:4]
             month_str = date_string[4:6]
-            collection = re.search(r'^TEMPO_NO2_L2_(V\d{2})_\d{8}T\d{6}Z_S\d{3}G\d{2}\.nc$', original_file).group(1)
+            collection = re.search(r'^TEMPO_NO2_L2_(V\d{2})_\d{8}T\d{6}Z_S\d{3}G\d{2}\.nc$', tempo_file).group(1)
 
-            date_of_interest = datetime.strptime(date_string, '%Y%m%d')
-            
-            original_file_path = '{}/NO2/L2/{}/{}/{}/{}'.format(tempo_dir_head, collection, year_str, month_str, original_file)
-            
-            if isinstance(scan_df.loc[granule, 'BEHR Name'], float):
-                if np.isnan(scan_df.loc[granule, 'BEHR Name']):
-                    if grans_with_behr == 0:
-                        # None of the granules have BEHR data.
-                        # No need to add BEHR fill values for the sake of combining the granule datasets
-                        fill_behr_vars = False
+            if not first_granule:
+                if collection != scan_collection:
+                    raise ValueError("Granules do not share the same processor version.")
                 
-                    else:
-                        # Since other granules have BEHR data, we want to include those variables here
-                        fill_behr_vars = True
-                        
-                    granule_ds = synthesize_tempo_behr(original_file_path, tempo_init_dict, vars_path, full_FOR, ms_min, ms_max, xt_min, xt_max, use_behr_output=False, fill_behr_vars=fill_behr_vars)
-            
-            
+            # Optionally, we might also have an initialized dictionary of data and a BEHR output
+            if 'Init Dict Name' in list(scan_df.columns):
+                if not np.isnan(scan_df.loc[granule, 'Init Dict Name']):
+                    tempo_init_dict = os.path.join(scan_df.loc[granule, 'Init Dict Location'], scan_df.loc[granule, 'Init Dict Name'])
                 else:
-                    raise Exception('Unable to interpret value for BEHR Name')
-            
+                    tempo_init_dict = None
             else:
-                behr_pickle_path = '{}/{}'.format(MAT_TO_PY_SUITCASE, scan_df.loc[granule, 'BEHR Name'])
-                granule_ds = synthesize_tempo_behr(original_file_path, tempo_init_dict, vars_path, full_FOR, ms_min, ms_max, xt_min, xt_max, use_behr_output=True, behr_output=behr_pickle_path)
+                tempo_init_dict = None
+
+            if 'BEHR Name' in list(scan_df.columns):
+                if isinstance(scan_df.loc[granule, 'BEHR Name'], float):
+                    if np.isnan(scan_df.loc[granule, 'BEHR Name']):
+                        behr_dict = None
+
+                        if grans_with_behr == 0:
+                            # None of the granules have BEHR data.
+                            # No need to add BEHR fill values for the sake of combining the granule datasets
+                            fill_behr_vars = False
+                        else:
+                            # Since other granules have BEHR data, we want to include those variables here
+                            fill_behr_vars = True
+                    else:
+                        raise Exception('Unable to interpret value for BEHR Name') 
+                    
+                elif isinstance(scan_df.loc[granule, 'BEHR Name'], str):
+                    behr_dict = os.path.join(scan_df.loc[granule, 'BEHR Location'], scan_df.loc[granule, 'BEHR Name'])
+                    fill_behr_vars = False # we don't fill because we will use the data in the behr_dict
+
+            else:
+                # We didn't add additional data using the BEHR code
+                behr_dict = None
+                fill_behr_vars = False
+
+            granule_ds = synthesize_tempo_behr(original_file_path, vars_path, full_FOR, tempo_init_path=tempo_init_dict, behr_output=behr_dict, fill_behr_vars=fill_behr_vars)
 
             # Add a variable to associate these mirror_step values with the appropriate granule
             granule_ds['granule'] = (['mirror_step'], np.full(granule_ds['mirror_step'].shape, granule, dtype=int), {'description': 'granule number for TEMPO scan'})
@@ -201,15 +219,18 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
             granule_dict[granule] = granule_ds
 
             if first_granule:
-                lat_domain = granule_ds.attrs['LatBdy_G{:02d}'.format(granule)]
-                lon_domain = granule_ds.attrs['LonBdy_G{:02d}'.format(granule)]
+                if full_FOR:
+                    geobounds_str = "full-FOR"
+
+                else:
+                    # Take the latitude/longitude boundaries used to filter the initialized dictionaries
+                    # and construct a string describing these boundaries
+                    lat_domain = granule_ds.attrs['LatBdy_G{:02d}'.format(granule)]
+                    lon_domain = granule_ds.attrs['LonBdy_G{:02d}'.format(granule)]
+                    geobounds_str = build_geobounds_str(lat_domain, lon_domain)
+
+                scan_collection = collection
                 first_granule = False
-
-        if full_FOR:
-            geobounds_str = "full-FOR"
-
-        else:
-            geobounds_str = build_geobounds_str(lat_domain, lon_domain)
 
         #########################################################
         #### Concatenate Granules along Mirrorstep Dimension ####
@@ -224,6 +245,7 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
 
         shape_2d = (scan_ds.mirror_step.size, scan_ds.xtrack.size)
         n_swt_levels = scan_ds.gas_profile.shape[2]
+
 
         #############################
         #### Set Operating Modes ####
@@ -298,6 +320,14 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
         #### Add Boundary Layer Heights ####
         ####################################
 
+        # SB 2026-03-19
+        # We now need to account for V04 product where the GEOS-CF derived PBLH is included
+        if int(scan_collection[1:]) >= 4:
+            # Rename the column from "pbl_height" so it's clear it is from GEOS-CF
+            scan_ds = scan_ds.rename({'pbl_height': 'boundary_layer_height_geoscf'})
+
+        # The prefix "sdr" before boundary_layer_height will indicate the values being used in the BL/FT split
+
         # ---------------------------------------------------------------------------------------------------------------------------------------
 
         if constant_boundary_layer_height:
@@ -306,6 +336,19 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
             if verbosity > 2:
                 print('Using constant boundary layer height of ' + str(pblh_value) + ' m')
             pblh_save_string = "fixed_bl_" + str(pblh_value)
+
+            scan_ds['sdr_boundary_layer_height'] = (['mirror_step', 'xtrack'], nearest_pblh, {'units': 'm', 'description': pblh_var_description})
+
+        elif use_provided_pblh:
+            if int(scan_collection[1:]) < 4:
+                raise Exception("Cannot use provided boundary layer height with this version of the TEMPO product")
+            
+            pblh_var_description = 'boundary layer height derived from GEOS-CF (from standard retrieval)'
+            if verbosity > 2:
+                print('Using boundary layer heights provided in the TEMPO product')
+            pblh_save_string = "variable_bl_GEOSCF"
+
+            scan_ds['sdr_boundary_layer_height'] = (['mirror_step', 'xtrack'], scan_ds.boundary_layer_height_geoscf.data, {'units': 'm', 'description': pblh_var_description})
 
         # ---------------------------------------------------------------------------------------------------------------------------------------
 
@@ -620,7 +663,7 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
             if verbosity > 2:
                 print('----> {}'.format(mode))
 
-            scan_ds = set_quality_flags(scan_ds, mode)
+            scan_ds = set_quality_flags(scan_ds, update_mode=mode, ecf_max=ecf_max, sza_max=sza_max, sif_max=sif_max)
 
         ############################################
         #### Run amf_recursive_update algorithm ####
@@ -666,111 +709,141 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
 
             iteration_record = np.array([0, 1, N_updates], dtype=int) # Added to avoid UnboundLocalError (presumably for when no good pixels are found for lat/lon pair
 
+            # Store the names of variables needed for the algorithm
+            subset_vars = [
+                'update_quality_flags_{}'.format(mode),
+                'gas_profile',
+                'amf_troposphere',
+                'vertical_column_troposphere',
+                'geoscf_tropopause_layer_index',
+                'boundary_layer_index',
+                'model_no2_boundary_layer_vcd',
+                'model_no2_tropospheric_vcd',
+                sw_var,
+                'area',
+                'TemperatureCorrection',
+            ]
+
             # Each prior is distinguished by a lat/lon pair on the GEOS-CF grid
 
-            # For full field of regard (FOR) runs, lat_domain and lon_domain can be set
-            # arbitrarily large to ensure all pixels are selected for
+            # Compose a DataFrame to group the pixels by shared GEOS-CF priors
+            geoscf_df = pd.DataFrame({
+                'mirror_step': ms_mesh.flatten(),
+                'xtrack': xt_mesh.flatten(),
+                'BadGeoMask': scan_ds['BadGeoMask'].data.flatten(),
+                'nearest_geoscf_latitude': scan_ds['nearest_geoscf_latitude'].data.flatten(),
+                'nearest_geoscf_longitude': scan_ds['nearest_geoscf_longitude'].data.flatten()
+            })
 
-            # We can quickly determine if a selected (lat, lon) coordinate is outside the FOR
-            # using a rough outline of the FOR
+            # Drop pixels with no geolocation info
+            geoscf_df = geoscf_df[~geoscf_df['BadGeoMask']]
+            geoscf_df.drop(columns=['BadGeoMask'], inplace=True)
 
-            with open(os.path.join(constants_path, 'TEMPO_rough_FOR.pickle'), 'rb') as handle:
-                field_of_regard = pickle.load(handle)
+            # Group by prior
+            geoscf_grouping = geoscf_df.groupby(['nearest_geoscf_latitude', 'nearest_geoscf_longitude'])
+            # Return a DataFrame where the 'mirror_step' column gives a list of indices for the matching pixels
+            ms_match_df = geoscf_grouping['mirror_step'].apply(list).reset_index()
 
-            for lat in np.arange(lat_domain[0], lat_domain[1]+0.25, 0.25):
-                for lon in np.arange(lon_domain[0], lon_domain[1]+0.25, 0.25): 
-                    running_main_algorithm = True
+            # Store as lists (each is really a list of lists)
+            ms_match_list = ms_match_df['mirror_step'].to_list()
+            xt_match_list = geoscf_grouping['xtrack'].apply(list).to_list()
+            # These should be lists of floats
+            lat_list = ms_match_df['nearest_geoscf_latitude'].to_list()
+            lon_list = ms_match_df['nearest_geoscf_longitude'].to_list()
+            # Store the number of GEOS-CF groups
+            N_groups = len(lat_list)
 
-                    if shapely.geometry.Point(lon, lat).within(field_of_regard):
-                        try:
-                            # Round to 2 decimals. TEMPO data should already be rounded
-                            lat = np.round(lat, decimals=2)
-                            lon = np.round(lon, decimals=2)
+            for grp in range(N_groups):
+                running_main_algorithm = True
 
-                            ms_mesh, xt_mesh = np.meshgrid(np.arange(scan_ds.mirror_step.size), np.arange(scan_ds.xtrack.size), indexing='ij')
+                ms_match = np.array(ms_match_list[grp], dtype=int)
+                xt_match = np.array(xt_match_list[grp], dtype=int)
+                lat = lat_list[grp]
+                lon = lon_list[grp]
 
-                            # Locate the matching indices for mirror_step and xtrack
-                            prior_match_condition = (scan_ds['nearest_geoscf_latitude'].data == lat) & (scan_ds['nearest_geoscf_longitude'].data == lon)
-                            prior_match_condition = prior_match_condition & ~scan_ds['BadGeoMask'].data
-                            ms_match = ms_mesh[prior_match_condition]
-                            xt_match = xt_mesh[prior_match_condition]
+                if len(xt_match) == 0:
+                    continue
 
-                            if len(xt_match) == 0:
-                                continue
+                try:
+                    # Define a subset of scan_ds using the matched pixels
+                    subset_ds = {}
+                    for v in subset_vars:
+                        # Slice will reduce scalar variables to 1D [pixel,] and vertically-resolved variables to 2D [pixel, swt_level]
+                        subset_ds[v] = scan_ds[v].data[ms_match, xt_match]
 
-                            # Prepare information for recursive update
-                            # The dimension match arrays are updated to remove any pixels with critical issues (i.e. missing AMF or VCD)
-                            aru_args, ms_match_filt, xt_match_filt = prepare_for_update(scan_ds, prior_match_condition, ms_match, xt_match, n_swt_levels, N_updates, sw_var, "update_quality_flags_{}".format(mode))
+                    # Prepare information for recursive update
+                    # The dimension match arrays are updated to remove any pixels with critical issues (i.e. missing AMF or VCD)
+                    aru_args, ms_match_filt, xt_match_filt = prepare_for_update(subset_ds, ms_match, xt_match, n_updates=N_updates, sw_var=sw_var, uqf_var="update_quality_flags_{}".format(mode))
 
-                            ########################
-                            # Perform the AMF update
-                            # In prepare_for_update, we determined if there are any good pixels
-                            if aru_args['good_pixels'].size == 0:
-                                if len(ms_match_filt) == 0:
-                                    # If we also have no pixels to work with at all, move on from this prior
-                                    continue
+                    ########################
+                    # Perform the AMF update
+                    # In prepare_for_update, we determined if there are any good pixels
+                    if aru_args['good_pixels'].size == 0:
+                        if len(ms_match_filt) == 0:
+                            # If we also have no pixels to work with at all, move on from this prior
+                            continue
 
-                                else:
-                                    # Otherwise, calculate values of AMF and VCD for the "initial" step,
-                                    # even though we have no good pixels to update the prior
-                                    apriori_partial_columns, trop_amfs, retrieved_trop_vcd, iteration_record, vcd_iter_diff, portion_free_trop, removed_ft_in_practice, retrieved_over_apriori_gridcell, retrieved_model_mismatch_flag = amf_recursive_update_no_good_pixels(**aru_args)
+                        else:
+                            # Otherwise, calculate values of AMF and VCD for the "initial" step,
+                            # even though we have no good pixels to update the prior
+                            apriori_partial_columns, trop_amfs, retrieved_trop_vcd, iteration_record, vcd_iter_diff, portion_free_trop, removed_ft_in_practice, retrieved_over_apriori_gridcell, retrieved_model_mismatch_flag = amf_recursive_update_no_good_pixels(**aru_args)
 
-                            else:
-                                # If we do have good pixels, run the full recursive update with changes to the 
-                                # prior at each iteration
-                                apriori_partial_columns, trop_amfs, retrieved_trop_vcd, iteration_record, vcd_iter_diff, portion_free_trop, removed_ft_in_practice, retrieved_over_apriori_gridcell, retrieved_model_mismatch_flag  = amf_recursive_update(**aru_args)
-                            ########################
+                    else:
+                        # If we do have good pixels, run the full recursive update with changes to the 
+                        # prior at each iteration
+                        apriori_partial_columns, trop_amfs, retrieved_trop_vcd, iteration_record, vcd_iter_diff, portion_free_trop, removed_ft_in_practice, retrieved_over_apriori_gridcell, retrieved_model_mismatch_flag  = amf_recursive_update(**aru_args)
+                    ########################
 
-                            # Rearrange axes so that the iteration dimension is after the pixel dimension
-                            apriori_partial_columns = np.moveaxis(apriori_partial_columns, [0, 1, 2], [1, 0, 2])
-                            trop_amfs = trop_amfs.T
-                            retrieved_trop_vcd = retrieved_trop_vcd.T
-                            vcd_iter_diff = vcd_iter_diff.T
+                    # Rearrange axes so that the iteration dimension is after the pixel dimension
+                    apriori_partial_columns = np.moveaxis(apriori_partial_columns, [0, 1, 2], [1, 0, 2])
+                    trop_amfs = trop_amfs.T
+                    retrieved_trop_vcd = retrieved_trop_vcd.T
+                    vcd_iter_diff = vcd_iter_diff.T
 
-                            # To evaluate ability of observation to update the prior, we can consider
-                            # what percentange of the model pixel was observed with good quality
-                            # Compute model area as a trapezoid
-                            top_length = great_circle_distance(lat + 0.125, lon - 0.125, lat + 0.125, lon + 0.125, units='m', float_mode=True)
-                            bottom_length = great_circle_distance(lat - 0.125, lon - 0.125, lat - 0.125, lon + 0.125, units='m', float_mode=True)
-                            height = great_circle_distance(lat - 0.125, lon, lat + 0.125, lon, units='m')
-                            model_area = ((top_length + bottom_length) / 2) * height
+                    # To evaluate ability of observation to update the prior, we can consider
+                    # what percentange of the model pixel was observed with good quality
+                    # Compute model area as a trapezoid
+                    top_length = great_circle_distance(lat + 0.125, lon - 0.125, lat + 0.125, lon + 0.125, units='m', float_mode=True)
+                    bottom_length = great_circle_distance(lat - 0.125, lon - 0.125, lat - 0.125, lon + 0.125, units='m', float_mode=True)
+                    height = great_circle_distance(lat - 0.125, lon, lat + 0.125, lon, units='m')
+                    model_area = ((top_length + bottom_length) / 2) * height
 
-                            coverage_of_model_pixel_value = np.sum(aru_args['pixel_area'][aru_args['good_pixels']]) / model_area
+                    coverage_of_model_pixel_value = np.sum(aru_args['pixel_area'][aru_args['good_pixels']]) / model_area
 
-                            # Reconstruct data into the [mirror_step, xtrack] format
-                            for p in range(len(ms_match_filt)):
-                                ms = ms_match_filt[p]
-                                xt = xt_match_filt[p]
-                                
-                                no2_partial_columns_updated[ms, xt, :, :] = apriori_partial_columns[p, :, :] # [pixel, iteration, lev]
-                                tropospheric_amf_updated[ms, xt, :] = trop_amfs[p, :] # [pixel, iteration]
-                                no2_tropospheric_vcd_updated[ms, xt, :] = retrieved_trop_vcd[p, :]
-                                vcd_iteration_differences[ms, xt, :] = vcd_iter_diff[p, :] # [pixel, iteration]
-                                coverage_of_model_pixel[ms, xt] = coverage_of_model_pixel_value
-                                proportion_free_troposphere[ms, xt] = portion_free_trop
-                                removed_free_troposphere_in_practice[ms, xt, :] = removed_ft_in_practice
-                                retrieved_over_apriori_gridcell_arr[ms, xt] = retrieved_over_apriori_gridcell
-                                retrieved_model_mismatch_flag_arr[ms, xt] = retrieved_model_mismatch_flag
+                    # Reconstruct data into the [mirror_step, xtrack] format
+                    for p in range(len(ms_match_filt)):
+                        ms = ms_match_filt[p]
+                        xt = xt_match_filt[p]
+                        
+                        no2_partial_columns_updated[ms, xt, :, :] = apriori_partial_columns[p, :, :] # [pixel, iteration, lev]
+                        tropospheric_amf_updated[ms, xt, :] = trop_amfs[p, :] # [pixel, iteration]
+                        no2_tropospheric_vcd_updated[ms, xt, :] = retrieved_trop_vcd[p, :]
+                        vcd_iteration_differences[ms, xt, :] = vcd_iter_diff[p, :] # [pixel, iteration]
+                        coverage_of_model_pixel[ms, xt] = coverage_of_model_pixel_value
+                        proportion_free_troposphere[ms, xt] = portion_free_trop
+                        removed_free_troposphere_in_practice[ms, xt, :] = removed_ft_in_practice
+                        retrieved_over_apriori_gridcell_arr[ms, xt] = retrieved_over_apriori_gridcell
+                        retrieved_model_mismatch_flag_arr[ms, xt] = retrieved_model_mismatch_flag
 
-                                # Change units back from mol/m^2 to molecules/cm^2
-                                no2_partial_columns_updated[ms, xt, :, :] = no2_partial_columns_updated[ms, xt, :, :] * 6.022e+19
-                                no2_tropospheric_vcd_updated[ms, xt, :] = no2_tropospheric_vcd_updated[ms, xt, :] * 6.022e+19
-                                removed_free_troposphere_in_practice[ms, xt, :] = removed_free_troposphere_in_practice[ms, xt, :] * 6.022e+19
+                        # Change units back from mol/m^2 to molecules/cm^2
+                        no2_partial_columns_updated[ms, xt, :, :] = no2_partial_columns_updated[ms, xt, :, :] * 6.022e+19
+                        no2_tropospheric_vcd_updated[ms, xt, :] = no2_tropospheric_vcd_updated[ms, xt, :] * 6.022e+19
+                        removed_free_troposphere_in_practice[ms, xt, :] = removed_free_troposphere_in_practice[ms, xt, :] * 6.022e+19
 
-                                # 2025-04-24: Added boundary layer prior so that user can reconstruct the prior from the original gas profile and boundary_layer_idnex
-                                # even if they are lacking the updated gas_profile
-                                no2_boundary_layer_prior_updated[ms, xt, :] = np.sum(
-                                                                                    no2_partial_columns_updated[ms, xt, :, :(scan_ds.boundary_layer_index.data[ms, xt]+1)], 
-                                                                                    axis=1
-                                                                                    ) # molecules/cm^2
+                        # 2025-04-24: Added boundary layer prior so that user can reconstruct the prior from the original gas profile and boundary_layer_idnex
+                        # even if they are lacking the updated gas_profile
+                        no2_boundary_layer_prior_updated[ms, xt, :] = np.sum(
+                                                                            no2_partial_columns_updated[ms, xt, :, :(scan_ds.boundary_layer_index.data[ms, xt]+1)], 
+                                                                            axis=1
+                                                                            ) # molecules/cm^2
 
-                        except Exception as e:
-                            debug_mode = True
-                            if debug_mode:
-                                raise e
-                            
-                            else:
-                                print('Issue performing update on this prior')
+                except Exception as e:
+                    debug_mode = True
+                    if debug_mode:
+                        raise e
+                    
+                    else:
+                        print('Issue performing update on this prior')
 
 
             # Store the new values in the dataset
@@ -825,7 +898,7 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
                                                                 proportion_free_troposphere, 
                                                                 {
                                                                     'units': '1',
-                                                                    'description': 'proportion of tropospheric NO2 in the coarse model resolution (1 degree) allocated to the free troposphere'
+                                                                    'description': 'proportion of tropospheric NO2 in the coarse model resolution (25 km) allocated to the free troposphere'
                                                                 }
             )
 
@@ -925,34 +998,49 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
             # which are available in the original datasets
             scan_ds = prune_dataset(scan_ds, update_modes, remove_originals=True)
 
-        # Naming of output file
-
-        current_time = datetime.now()
-        current_time_string = current_time.strftime('%Y%m%dT%H%M')
-
-        new_file_name = 'SDR-TEMPO_' + date_string + "_S{:03d}_".format(scan) + geobounds_str + '_n{:02d}_'.format(N_updates) + pblh_save_string + '_proc_' + current_time_string + '.nc'
-
         global_attrs = {
-            "version": "2stat",
-            "version_notes": "Retrieval version 2stat is version 2b for TEMPO. 2b retains the vertical shape factors of no2 partial columns from GEOS-CF. Unlike version 2, the layer containing the boundary layer pause is uniformly treated as part of the free troposphere in this version. The removed free tropospheric VCD is allowed to be negative, if one of the pixels with main_data_quality flag == 0 has a negative retrieved VCD.",
-            "Signal_Derived_Retrieval__commit": git_commit
+            "Signal_Derived_Retrieval__commit": git_commit,
+            "processing_script": "amf_update_one_scan.py"
         }
 
         scan_ds = scan_ds.assign_attrs(global_attrs)
-        
-        # behr_mode sub path is not included since it was set as part of save_path in the director script.
-        final_save_path = os.path.join(save_path, geobounds_str, year_str, month_str)
-        
-        # Example: for a file generated on the square CONUS bounds with no BEHR-MODIS data for April 2024:
-        # save_path/without_MODIS/lat_N25-N50_lon_W125-W065/2024/04/SDR-TEMPO...
 
-        # Check if the sub-directories exist. If they do not, then make them.
-        if not os.path.exists(final_save_path):
-            os.makedirs(final_save_path)
+        # Note that the default in this function is to save iteration 1 as the SDR value
+        finalize_product_file(
+                                processing_dataset=scan_ds, 
+                                product_dir=save_path, 
+                                sdr_version=sdr_version, 
+                                scan_num=scan, 
+                                geo_scope=geobounds_str, 
+                                product_itr = int(1),
+                                name_w_commit=name_w_commit, 
+                                name_w_proctime=name_w_proctime
+        )
 
-        final_save_name = os.path.join(final_save_path, new_file_name)
+    # SB 2026-03-22: The code below was used to save the output as a "BEHR-RED-TEMPO" file,
+    # before we settled on some of the details of the SDR product. Retaining for now since it
+    # could be resurrected to save intermediate products that retain all of the iterations instead
+    # of just the one reported in the SDR product.
+        if False:
+            # Naming of output file
+            current_time = datetime.now()
+            current_time_string = current_time.strftime('%Y%m%dT%H%M')
 
-        scan_ds.to_netcdf(final_save_name, mode='w')
+            new_file_name = 'BEHR-RED-TEMPO_' + date_string + "_S{:03d}_".format(scan) + geobounds_str + '_n{:02d}_'.format(N_updates) + pblh_save_string + '_proc_' + current_time_string + '.nc'
+
+            # behr_mode sub path is not included since it was set as part of save_path in the director script.
+            final_save_path = os.path.join(save_path, geobounds_str, year_str, month_str)
+            
+            # Example: for a file generated on the square CONUS bounds with no BEHR-MODIS data for April 2024:
+            # save_path/without_MODIS/lat_N25-N50_lon_W125-W065/2024/04/BEHR-RED-TEMPO...
+
+            # Check if the sub-directories exist. If they do not, then make them.
+            if not os.path.exists(final_save_path):
+                os.makedirs(final_save_path)
+
+            final_save_name = os.path.join(final_save_path, new_file_name)
+
+            scan_ds.to_netcdf(final_save_name, mode='w')
 
 
     except AssertionError as ae:
@@ -967,6 +1055,7 @@ def amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, tempo_d
             save_partial_ds()
 
     except Exception as e:
+        raise e
         print('General Exception encountered while processing scan. Will not finish process for this scan.')
         print('{}'.format(repr(e)))
 

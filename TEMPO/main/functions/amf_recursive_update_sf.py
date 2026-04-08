@@ -114,8 +114,6 @@ def amf_recursive_update(
     iteration_record = np.array([], dtype=int)
     percent_difference_from_previous_iteration = np.full((Ni+1, Np), np.nan)
 
-    # Define good pixels as those with a QA value above 0.75 (per PUM)
-
     model_boundary_layer_vcd = np.where(np.isnan(model_boundary_layer_vcd), 0, model_boundary_layer_vcd)
 
     # Find the slant column density

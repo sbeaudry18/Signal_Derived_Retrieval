@@ -1,17 +1,13 @@
 #### prepare_for_update.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2025-10-15
+# Last changed: 2026-03-26
 # Location: Signal_Derived_Retrieval/TEMPO/main/functions
 # Contact: samuel_beaudry@berkeley.edu
 
 ###############################
 
-import xarray as xr
-import numpy as np
-import pandas as pd
-
-def prepare_for_update(scan_ds: xr.Dataset, prior_match_condition : np.ndarray, ms_match : np.ndarray, xt_match : np.ndarray, n_swt_levels: int, n_updates: int=50, sw_var: str='scattering_weights', uqf_var: str='update_quality_flags_Standard'):
+def prepare_for_update(subset_ds, ms_match, xt_match, n_updates: int=2, sw_var: str='scattering_weights', uqf_var: str='update_quality_flags_Standard'):
     '''
     Collects information from pixels with shared prior for use in the recursive update
 
@@ -21,16 +17,12 @@ def prepare_for_update(scan_ds: xr.Dataset, prior_match_condition : np.ndarray, 
 
     Parameters
     ----------
-    scan_ds : xr.Dataset
-        TEMPO Dataset with the variables sufficient for performing the update
-    prior_match_condition : np.ndarray
-        Array with dimensions [mirror_step, xtrack] indicating if each pixel is matched with the selected GEOS-CF cell
+    subset_ds : dict
+        Dict of TEMPO variables necessary for update
     ms_match : np.ndarray
-        Mirrorstep indices corresponding to prior_match_condition
+        Mirrorstep indices of pixels sharing the same GEOS-CF prior
     xt_match : np.ndarray
-        XTrack indices corresponding to prior_match_condition
-    n_swt_levels : int
-        The number of GEOS-CF scattering weight levels for the vertical dimension
+        XTrack indices of pixels sharing the same GEOS-CF prior
     n_updates : int (Optional)
         Number of times to update the a priori profiles based on the retrieved values
     sw_var : str (Optional)
@@ -43,30 +35,31 @@ def prepare_for_update(scan_ds: xr.Dataset, prior_match_condition : np.ndarray, 
     dict
         Arguments to amf_recursive_update
     '''      
+    import numpy as np
 
     # Arrays needed to determine pixel quality and perform update
-    update_quality_flags = scan_ds[uqf_var].data[prior_match_condition]
+    update_quality_flags = subset_ds[uqf_var]
 
-    model_partial_columns = scan_ds['gas_profile'].data[prior_match_condition]
+    model_partial_columns = subset_ds['gas_profile']
     model_partial_columns /= 6.022e19 # mol m^-2
-    original_amf = scan_ds['amf_troposphere'].data[prior_match_condition]
-    original_retrieved_vcd = scan_ds['vertical_column_troposphere'].data[prior_match_condition]
+    original_amf = subset_ds['amf_troposphere']
+    original_retrieved_vcd = subset_ds['vertical_column_troposphere']
     original_retrieved_vcd /= 6.022e19 # mol m^-2
-    trop_index = scan_ds['geoscf_tropopause_layer_index'].data[prior_match_condition]
-    boundary_layer_index = scan_ds['boundary_layer_index'].data[prior_match_condition]
-    model_boundary_layer_vcd = scan_ds['model_no2_boundary_layer_vcd'].data[prior_match_condition]
+    trop_index = subset_ds['geoscf_tropopause_layer_index']
+    boundary_layer_index = subset_ds['boundary_layer_index']
+    model_boundary_layer_vcd = subset_ds['model_no2_boundary_layer_vcd']
     model_boundary_layer_vcd /= 6.022e19 # mol m^-2
-    model_tropospheric_vcd = scan_ds['model_no2_tropospheric_vcd'].data[prior_match_condition]
+    model_tropospheric_vcd = subset_ds['model_no2_tropospheric_vcd']
     model_tropospheric_vcd /= 6.022e19 # mol m^-2
-    scattering_weights = scan_ds[sw_var].data[prior_match_condition]
-    pixel_area = scan_ds['area'].data[prior_match_condition]
+    scattering_weights = subset_ds[sw_var].copy()
+    pixel_area = subset_ds['area']
 
     if sw_var == 'scattering_weights':
         # SB 2025-03-25: My read of the TEMPO PUM is that the provided scattering weights do not
         # include the temperature correction factors. As of this date, the calculation of custom
         # scattering weights already incorporates the temperature factors. Add them in for the 
         # standard mode here
-        temperature_corrections = scan_ds['TemperatureCorrection'].data[prior_match_condition]
+        temperature_corrections = subset_ds['TemperatureCorrection']
         scattering_weights *= temperature_corrections
 
     # Remove pixels from the arrays that do not meet "calculation quality"

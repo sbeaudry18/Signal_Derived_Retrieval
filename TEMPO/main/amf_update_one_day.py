@@ -1,7 +1,7 @@
 #### amf_update_one_day.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2025-10-05
+# Last changed: 2026-03-27
 # Location: Signal_Derived_Retrieval/TEMPO/main
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -20,9 +20,12 @@ from datetime import timedelta
 import warnings
 from scipy.interpolate import NearestNDInterpolator
 
-from functions.build_geobounds_str import build_geobounds_str
+from TEMPO_L2_NO2_on_date import TEMPO_L2_NO2_on_date
 
-def amf_update_one_day(date_string, py_to_mat_textfile, PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, run_matlab, TEMPO, vars_path, constants_path, save_path, minimize_output_size, reprocess_if_exists, N_updates, pblh, full_FOR, N_workers=0, lon_domain=np.array([-180, 180]), lat_domain=np.array([-90, 90]), hrrr_grib=None, save_path_partial="", git_commit="None", prioritize_latest=True, remove_matlab=False, scanlist=None):
+from functions.build_geobounds_str import build_geobounds_str
+from functions.name_product_file import name_product_file
+
+def amf_update_one_day(date_string, TEMPO, collection, sdr_letter, vars_path, constants_path, save_path, minimize_output_size, reprocess_if_exists, N_updates, pblh, full_FOR, N_workers=0, lon_domain=np.array([-180, 180]), lat_domain=np.array([-90, 90]), hrrr_grib=None, save_path_partial="", git_commit="None", prioritize_latest=True, remove_matlab=False, scanlist=None, py_to_mat_textfile=None, PY_TO_MAT_SUITCASE=None, MAT_TO_PY_SUITCASE=None, run_matlab=False, file_df=None):
     '''
     Calls amf_update_one_scan across the provided day.
 
@@ -30,16 +33,12 @@ def amf_update_one_day(date_string, py_to_mat_textfile, PY_TO_MAT_SUITCASE, MAT_
     ----------
     date_string : str
         YYYYMMDD to process
-    py_to_mat_textfile : str 
-        path to .txt file containing the names of the dictionaries produced by TEMPO_L2_NO2_on_date.py
-    PY_TO_MAT_SUITCASE : str 
-        path of the directory containing dictionaries produced by TEMPO_L2_NO2_on_date.py
-    MAT_TO_PY_STUICASE : str
-        path of the directory containing dictionaries produced by read_main_single.m
-    run_matlab : bool
-        whether MATLAB is run during the process to get MODIS albedo values
     TEMPO : str 
         path to unprocessed TEMPO data
+    collection : str
+        TEMPO processor version 
+    sdr_letter : str
+        SDR processer version letter
     vars_path : str 
         path to the .csv file containing TEMPO variable names and groups
     constants_path : str
@@ -74,6 +73,16 @@ def amf_update_one_day(date_string, py_to_mat_textfile, PY_TO_MAT_SUITCASE, MAT_
         if True, will remove dictionaries in MAT_TO_PY_SUITCASE after reading their data
     scanline : list (Optional)
         list of scans to restrict processing to
+    py_to_mat_textfile : str 
+        path to .txt file containing the names of the dictionaries produced by TEMPO_L2_NO2_on_date.py
+    PY_TO_MAT_SUITCASE : str 
+        path of the directory containing dictionaries produced by TEMPO_L2_NO2_on_date.py
+    MAT_TO_PY_STUICASE : str
+        path of the directory containing dictionaries produced by read_main_single.m
+    run_matlab : bool
+        whether MATLAB is run during the process to get MODIS albedo values
+    file_df : pd.DataFrame (Optional)
+        DataFrame produced by TEMPO_L2_NO2_on_date
     '''
 
     N_workers = int(N_workers)
@@ -81,17 +90,18 @@ def amf_update_one_day(date_string, py_to_mat_textfile, PY_TO_MAT_SUITCASE, MAT_
         parallel_algorithm = False
         # Import main processing function
         from amf_update_one_scan import amf_update_one_scan
-        print('Will process days using serial algorithm')
+        print('Will process scans using serial algorithm')
 
     elif N_workers > 1:
         parallel_algorithm = True
 
-        print('Will process days using parallel algorithm')
+        print('Will process scans using parallel algorithm')
 
         scan_df_list = []
+        save_options_list = []
 
     else:
-        raise ValueError("Value for 'N_workers' of {} is not greater than or equal to zero.".format(N_workers))
+        raise ValueError("Value for 'N_workers' of {} is not greater than or equal to 1.".format(N_workers))
     
     print('')
 
@@ -105,90 +115,80 @@ def amf_update_one_day(date_string, py_to_mat_textfile, PY_TO_MAT_SUITCASE, MAT_
     else:
         check_against_list = False
     
-    # Determine the list of granule datasets to work with for this day
-    file_list_tempo = []
-    with open(py_to_mat_textfile) as file_record:
-        for line in file_record:
-            file_list_tempo.append(line[:-1])
+    # Check if we have already called TEMPO_L2_NO2_on_date and provided the DataFrame with matched files
+    if file_df is None:
+        # Call TEMPO_L2_NO2_on_date for the provided day
+        file_df = TEMPO_L2_NO2_on_date(date_string, TEMPO, collection, vars_path, full_FOR)
 
-    if file_list_tempo[0][:4] == '9999':
-        print('No TEMPO files in PY_TO_MAT_SUITCASE for date {}'.format(date_string))
+    elif not isinstance(file_df, pd.DataFrame):
+        raise ValueError("'file_df' must be None or pd.DataFrame, not {}".format(type(file_df)))
+
+    if len(file_df) > 0:
+        file_df['Scan'] = file_df['TEMPO Name'].str.extract(r'S(\d{3})G\d{2}').astype(int)
+        file_df['Granule'] = file_df['TEMPO Name'].str.extract(r'S\d{3}G(\d{2})').astype(int)
     
-    else:        
-        if len(file_list_tempo) > 0:
-            file_df = pd.DataFrame({'TEMPO Name': file_list_tempo})
-            file_df['Scan'] = file_df['TEMPO Name'].str.extract(r'S(\d{3})G\d{2}').astype(int)
-            file_df['Granule'] = file_df['TEMPO Name'].str.extract(r'S\d{3}G(\d{2})').astype(int)
+        for scan in file_df['Scan'].unique():
+            if check_against_list:
+                if scan not in scanlist:
+                    # If not in the provided list, skip the processing for this scan
+                    continue
 
-            file_list_behr = os.listdir(MAT_TO_PY_SUITCASE)
-        
-            for scan in file_df['Scan'].unique():
-                if check_against_list:
-                    if scan not in scanlist:
-                        # If not in the provided list, skip the processing for this scan
-                        continue
+            scan_df = file_df[file_df['Scan'] == scan].copy()
 
-                if not reprocess_if_exists:
-                    # Setting to restrict matching outputs to those with the same number of update iterations
-                    require_n_updates = True
+            # Each row contains a granule we want to use
+            scan_df.set_index('Granule', inplace=True)
 
-                    # Determine if an equivalent dataset exists
-                    # If so, do not process this scan
+            # Check if an equivalent file exists
+            # "Equivalent": Same date and scan, same TEMPO processor version (e.g. V03), same SDR version (e.g. V03-A)
+            # Start by assuming it doesn't
+            name_w_commit = False
+            name_w_proctime = False
 
-                    # Start by writing a regex pattern to match equivalent datasets
-                    if full_FOR:
-                        geobounds_str = "full-FOR"
+            # Generate a file name using the earliest granule
+            earliest_granule = scan_df.loc[scan_df.index[0], 'TEMPO Name']
+            tempo_file_pat = re.compile(r'^TEMPO_NO2_L2_V\d{2}_(\d{8}T\d{6}Z)_(S\d{3})G\d{2}\.nc$')
+            start_time = tempo_file_pat.match(earliest_granule).group(1)
+            scan_num = tempo_file_pat.match(earliest_granule).group(2)
+            
+            if full_FOR:
+                geo_scope = "full-FOR"
 
-                    else:
-                        geobounds_str = build_geobounds_str(lat_domain, lon_domain)
+            else:
+                geo_scope = build_geobounds_str(lat_domain, lon_domain)
 
-                    if pblh == 'hrrr':
-                        bl_setting = 'variable'
-                        bl_value = 'HRRR'
+            test_file_name = name_product_file("{}-{}".format(collection, sdr_letter), start_time, "19700101T000000Z", scan_num, geo_scope) # end time doesn't matter for this check
+            sdr_file_pat = re.compile(r'SDR-TEMPO_NO2_L2_([^_]+)_(\d{4})(\d{2})(\d{2}T\d{6}Z)_[^_]+_([^_]+)_([^_\.]+)')
+            name_groups = sdr_file_pat.match(test_file_name)
+            sdr_file_eqv = re.compile(r'SDR-TEMPO_NO2_L2_{sdr_version}_{year}{mo}{day_time}_\d{{8}}T\d{{6}}Z_{scan}_{geo}'.format(sdr_version=name_groups.group(1), year=name_groups.group(2), mo=name_groups.group(3), day_time=name_groups.group(4), scan=name_groups.group(5), geo=name_groups.group(6)))
 
-                    else:
-                        bl_setting = 'fixed'
-                        bl_value = pblh
+            sdr_path = os.path.join(save_path, 'NO2', 'L2', name_groups.group(1), name_groups.group(6), name_groups.group(2), name_groups.group(3))
 
-                    if require_n_updates:
-                        dataset_name_pat = re.compile(r'^SDR-TEMPO_{date_string}_S{scan:03d}_{geo}_n{N:02d}_{bl_setting}_bl_{bl_value}_proc_\d{{8}}T\d{{4}}\.nc$'.format(date_string=date_string, scan=scan, geo=geobounds_str, N=N_updates, bl_setting=bl_setting, bl_value=bl_value))
+            if os.path.exists(sdr_path):
+                sdr_existing_files = os.listdir(sdr_path)
 
-                    else:
-                        dataset_name_pat = re.compile(r'^SDR-TEMPO_{date_string}_S{scan:03d}_{geo}_n\d{{2}}_{bl_setting}_bl_{bl_value}_proc_\d{{8}}T\d{{4}}\.nc$'.format(date_string=date_string, scan=scan, geo=geobounds_str, bl_setting=bl_setting, bl_value=bl_value))
+                if len(sdr_existing_files) > 0:
+                    sdr_matching_files = [f for f in sdr_existing_files if sdr_file_eqv.match(f)]
 
-                    # Check against existing files to see if any equivalents exist
+                    n_matching_files = len(sdr_matching_files)
+                    if n_matching_files > 0:
+                        print('{} equivalent SDR file(s) for scan {} at save_path'.format(n_matching_files, scan))
 
-                    # The below lines were commented out since the results subdirectory setting occurs in the director script
-                    #if run_matlab:
-                    #    behr_mode = 'with_MODIS'
-                    #else:
-                    #    behr_mode = 'without_MODIS'
+                        if reprocess_if_exists:
+                            print('Will reprocess')
+                            name_w_commit = False
+                            name_w_proctime = True # this one will help prevent overwriting files
 
-                    eqv_save_loc = os.path.join(save_path, geobounds_str, date_string[:4], date_string[4:6])
+                            if (not name_w_commit) & (not name_w_proctime):
+                                warnings.warn('Reprocessed file will overwrite existing file')
 
-                    # First see if this director exists. If not, then there are no equivalent files
-                    if os.path.exists(eqv_save_loc):
-                        eqv_file_list = os.listdir(eqv_save_loc)
-                        eqv_file_list.sort()
+                        else:
+                            print('Will not reprocess')
+                            continue # continues to next scan
 
-                        matching_file_list = [f for f in eqv_file_list if dataset_name_pat.match(f)]
-
-                        # If any files match these conditions, then skip them
-                        if len(matching_file_list) > 0:
-                            print('Encountered existing dataset. Skipping this scan:')
-                            print('Date: {}'.format(date_string))
-                            print('Scan: {:03d}'.format(scan))
-                            for f in matching_file_list:
-                                print('Existing File: {}'.format(f))
-                            print('')
-
-                            continue
-
-                scan_df = file_df[file_df['Scan'] == scan].copy()
-
-                # Each row contains a granule we want to use
-                scan_df.set_index('Granule', inplace=True)
-
+            if 'BEHR Name' in list(scan_df.columns):
+                file_list_behr = scan_df['BEHR Name'].to_list()
+                MAT_TO_PY_SUITCASE = scan_df['BEHR Location'].to_list()[0]
+                
                 behr_dfs = {}
 
                 for g in scan_df.index:
@@ -202,6 +202,7 @@ def amf_update_one_day(date_string, py_to_mat_textfile, PY_TO_MAT_SUITCASE, MAT_
 
                     if len(behr_matching) > 0:
                         behr_dfs[g] = pd.DataFrame({'BEHR Name': behr_matching})
+                        behr_dfs[g]['BEHR Location'] = MAT_TO_PY_SUITCASE
                         behr_dfs[g]['Granule'] = behr_dfs[g]['BEHR Name'].str.extract(r'S\d{3}G(\d{2})_proc').astype(int)
                         behr_dfs[g]['Major Version'] = behr_dfs[g]['BEHR Name'].str.extract(r'REDv(\d)-\d').astype(int)
                         behr_dfs[g]['Minor Version'] = behr_dfs[g]['BEHR Name'].str.extract(r'REDv\d-(\d)').astype(int)
@@ -244,42 +245,48 @@ def amf_update_one_day(date_string, py_to_mat_textfile, PY_TO_MAT_SUITCASE, MAT_
                 # Join TEMPO and BEHR DataFrames
                 scan_df = scan_df.join(behr_df, on='Granule', how='left')
 
+            sdr_version = "{}-{}".format(collection, sdr_letter)
 
-                if parallel_algorithm:
-                    scan_df_filename = 'scan_{:03d}_df.csv'.format(scan)
-                    scan_df.to_csv(scan_df_filename)
-                    scan_df_list.append(scan_df_filename)
-                    #amf_update_one_scan_par(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, TEMPO, vars_path, constants_path, save_path, minimize_output_size, full_FOR, N_workers, N_updates=N_updates, pblh=pblh, hrrr_grib=hrrr_grib, save_path_partial=save_path_partial, git_commit=git_commit, verbosity=5)
-                else:
-                    print('Starting process for scan {}'.format(scan))
-                    print('------------------------------')                    
-                    amf_update_one_scan(PY_TO_MAT_SUITCASE, MAT_TO_PY_SUITCASE, scan_df, TEMPO, vars_path, constants_path, save_path, minimize_output_size, full_FOR, N_updates=N_updates, pblh=pblh, hrrr_grib=hrrr_grib, save_path_partial=save_path_partial, git_commit=git_commit, verbosity=5)
-                    print('------------------------------')
-                    print('')
-
-                if remove_matlab:
-                    if len(behr_df) > 0:
-                        for i in behr_df.index:
-                            matlab_output_path = "{}/{}".format(MAT_TO_PY_SUITCASE, behr_df.loc[i, 'BEHR Name'])
-                            os.remove(matlab_output_path)
-
-            
             if parallel_algorithm:
-                with open("scan_df_file_list_transient.txt", 'w') as file:
-                    for i in range(len(scan_df_list)):
-                        file.write("{}\n".format(scan_df_list[i]))
-                file.close()
+                scan_df_filename = 'scan_{:03d}_df.csv'.format(scan)
+                scan_df.to_csv(scan_df_filename)
+                scan_df_list.append(scan_df_filename)
+
+                save_options_filename = 'scan_{:03d}_save_options.pickle'.format(scan)
+                with open(save_options_filename, 'wb') as handle:
+                    pickle.dump(dict(name_w_commit=name_w_commit, name_w_proctime=name_w_proctime), handle, protocol=pickle.HIGHEST_PROTOCOL)
+                save_options_list.append(save_options_filename)
+
+            else:
+                print('Starting process for scan {}'.format(scan))
+                print('------------------------------')                    
+                amf_update_one_scan(scan_df, TEMPO, vars_path, constants_path, save_path, sdr_version, minimize_output_size, full_FOR, N_updates=N_updates, pblh=pblh, hrrr_grib=hrrr_grib, save_path_partial=save_path_partial, git_commit=git_commit, name_w_commit=name_w_commit, name_w_proctime=name_w_proctime, verbosity=5)
+                print('------------------------------')
+                print('')
+
+            if remove_matlab:
+                if len(behr_df) > 0:
+                    for i in behr_df.index:
+                        matlab_output_path = "{}/{}".format( behr_df.loc[i, 'BEHR Location'], behr_df.loc[i, 'BEHR Name'])
+                        os.remove(matlab_output_path)
+
+        
+        if parallel_algorithm:
+            with open("scan_file_list_transient.txt", 'w') as file:
+                for i in range(len(scan_df_list)):
+                    file.write("scan_df: {} save_options: {}\n".format(scan_df_list[i], save_options_list[i]))
+            file.close()
+    else:
+        print('No files on date')
 
 def main():
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--current_date', type=str)
-    parser.add_argument('--py_to_mat_textfile', type=str)
-    parser.add_argument('--PY_TO_MAT_SUITCASE', type=str)
-    parser.add_argument('--MAT_TO_PY_SUITCASE', type=str)
-    parser.add_argument('--run_matlab', type=int)
     parser.add_argument('--TEMPO', type=str)
+    parser.add_argument('--collection', type=str)
+    parser.add_argument('--sdr_letter', type=str)
     parser.add_argument('--vars_path', type=str)
     parser.add_argument('--constants_path', type=str)
     parser.add_argument('--save_path', type=str)
@@ -311,7 +318,7 @@ def main():
     full_FOR = bool(args['fullfor'])
 
     if full_FOR:
-        amf_update_one_day(args['current_date'], args['py_to_mat_textfile'], args['PY_TO_MAT_SUITCASE'], args['MAT_TO_PY_SUITCASE'], bool(args['run_matlab']), args['TEMPO'], args['vars_path'], args['constants_path'], args['save_path'], bool(args['minimize_output_size']), bool(args['reprocess_if_exists']), args['N_updates'], args['pblh'], full_FOR, args['N_workers'], hrrr_grib=args['hrrr_grib'], save_path_partial=args['save_path_partial'], git_commit=args['git_commit'], prioritize_latest=True, scanlist=scanlist)
+        amf_update_one_day(args['current_date'], args['TEMPO'], args['collection'], args['sdr_letter'], args['vars_path'], args['constants_path'], args['save_path'], bool(args['minimize_output_size']), bool(args['reprocess_if_exists']), args['N_updates'], args['pblh'], full_FOR, args['N_workers'], hrrr_grib=args['hrrr_grib'], save_path_partial=args['save_path_partial'], git_commit=args['git_commit'], prioritize_latest=True, scanlist=scanlist)
 
     else:
         lon_domain = np.array([args['lonmin'], args['lonmax']], dtype=float)

@@ -1,7 +1,7 @@
 #### set_quality_flags.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2025-10-15
+# Last changed: 2026-03-26
 # Location: Signal_Derived_Retrieval/TEMPO/main/functions
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None):
+def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None, ecf_max=0.1, sza_max=70, sif_max=0):
     '''
     Creates bit array flag for troubleshooting and quality filtering
 
@@ -23,19 +23,17 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None):
         Scattering weight mode to determine flags for. Default is Standard
     nonzero_amf_calc : array (Optional)
         Predetermined nonzero_amf_calc to use instead of entering loop in this function
+    ecf_max : float (Optional)
+        The maximum effective cloud fraction allowed for good quality pixels
+    sza_max : float (Optional)
+        The maximum solar zenith angle allowed for good quality pixels
+    sif_max : float (Optional)
+        The maximum snow/ice fraction allowed for good quality pixels
     '''
 
     # Set the scattering_weight variable
     if update_mode == "Standard":
         sw_var = 'scattering_weights'
-
-        # SB 2025-03-25: My read of the TEMPO PUM is that the provided scattering weights do not
-        # include the temperature correction factors. As of this date, the calculation of custom
-        # scattering weights already incorporates the temperature factors. Add them in for the 
-        # standard mode here
-        temperature_corrections = scan_ds['TemperatureCorrection'].data
-        scattering_weights *= temperature_corrections
-
     else:
         sw_var = 'ScatteringWeightsIPA_{}'.format(update_mode)
 
@@ -47,12 +45,20 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None):
     trop_index = scan_ds['geoscf_tropopause_layer_index'].data
     boundary_layer_index = scan_ds['boundary_layer_index'].data
     model_boundary_layer_vcd = scan_ds['model_no2_boundary_layer_vcd'].data
-    scattering_weights = scan_ds[sw_var].data
+    scattering_weights = scan_ds[sw_var].data.copy()
     data_quality_flag = scan_ds['main_data_quality_flag'].data
     eff_cloud_fraction = scan_ds['eff_cloud_fraction'].data
     sza = scan_ds['solar_zenith_angle'].data
     pixel_area = scan_ds['area'].data
     snow_ice_fraction = scan_ds['snow_ice_fraction'].data
+
+    if update_mode == "Standard":
+        # SB 2025-03-25: My read of the TEMPO PUM is that the provided scattering weights do not
+        # include the temperature correction factors. As of this date, the calculation of custom
+        # scattering weights already incorporates the temperature factors. Add them in for the 
+        # standard mode here
+        temperature_corrections = scan_ds['TemperatureCorrection'].data
+        scattering_weights *= temperature_corrections
 
     shape_2d = original_amf.shape
 
@@ -71,35 +77,43 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None):
     trop_index_known = trop_index > 0
 
     # Filter 3: Scattering weight profile is complete
-    scattering_weights_good = ~np.any(np.isnan(scattering_weights), axis=1)
+    scattering_weights_good = ~np.any(np.isnan(scattering_weights), axis=2)
 
     # Filter 4: AMF calculation will produce non-zero values
     # Since this does not exactly follow the NASA method and may use custom scattering weights,
     # there is the risk that the calculated AMF will be zero. This is most likely in scenarios where the
     # cloud radiance fraction is 1 and the cloud layer is at or above the tropopause layer
 
-    # Check if we have a precalculated value for this provided 
-    if not isinstance(nonzero_amf_calc, np.ndarray):
+    # SB 2025-11-03: This filter is necessary when we were using custom scattering weights where
+    #                there is a potential for zero AMFs. When we use the standard scattering weights,
+    #                this is a time-consuming way to duplicate filter 0. Set the same as 0 in these cases
 
-        # If not, loop through the pixels and determine this
-        nonzero_amf_calc = np.array([], dtype=bool)
-        for ms in range(shape_2d[0]):
-            for xt in range(shape_2d[1]):
-                if trop_index_known[ms, xt] & scattering_weights_good[ms, xt]:
-                    trop = trop_index[ms, xt]
-                    m = scattering_weights[ms, xt, :trop+1]
-                    v = model_partial_columns[ms, xt, :trop+1]
+    if update_mode == "Standard":
+        nonzero_amf_calc = np.copy(original_amf_exists).flatten()
 
-                    numerator = np.sum(m * v)
-                    denominator = np.sum(v)
-                    calculated_amf = numerator / denominator
-                    if calculated_amf > 0:
-                        nonzero_amf_calc = np.append(nonzero_amf_calc, True)
+    else:
+        # Check if we have a precalculated value for this provided 
+        if not isinstance(nonzero_amf_calc, np.ndarray):
 
+            # If not, loop through the pixels and determine this
+            nonzero_amf_calc = np.array([], dtype=bool)
+            for ms in range(shape_2d[0]):
+                for xt in range(shape_2d[1]):
+                    if trop_index_known[ms, xt] & scattering_weights_good[ms, xt]:
+                        trop = trop_index[ms, xt]
+                        m = scattering_weights[ms, xt, :trop+1]
+                        v = model_partial_columns[ms, xt, :trop+1]
+
+                        numerator = np.sum(m * v)
+                        denominator = np.sum(v)
+                        calculated_amf = numerator / denominator
+                        if calculated_amf > 0:
+                            nonzero_amf_calc = np.append(nonzero_amf_calc, True)
+
+                        else:
+                            nonzero_amf_calc = np.append(nonzero_amf_calc, False)
                     else:
                         nonzero_amf_calc = np.append(nonzero_amf_calc, False)
-                else:
-                    nonzero_amf_calc = np.append(nonzero_amf_calc, False)
 
     # Filters 0-4 remove "critically bad" pixels; pixels that cannot be allowed to enter the AMF update process
     # or they will cause runtime warnings and or Exceptions
@@ -112,10 +126,10 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None):
     main_data_quality_0 = data_quality_flag < 1
 
     # Filter 6: strict requriement for low effective cloud fraction
-    low_eff_cloud_fraction = eff_cloud_fraction <= 0.1
+    low_eff_cloud_fraction = eff_cloud_fraction <= ecf_max
 
-    # Filter 7: solar zenith angle (SZA) is less than 70 degrees (following TEMPO PUM)
-    low_sza = sza < 70
+    # Filter 7: solar zenith angle (SZA) is less than or equal to threshold (70 degrees according to TEMPO PUM for V03)
+    low_sza = sza <= sza_max
 
     # Filter 8: model boundary layer VCD was found successfully
     model_bl_vcd_exists = ~np.isnan(model_boundary_layer_vcd)
@@ -131,8 +145,8 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None):
     # pixel areas are in m^2
     valid_pixel_area = (pixel_area >= 5e6) & (pixel_area <= 4e7)
 
-    # Filter 12: snow ice fraction is zero
-    zero_snow_ice = snow_ice_fraction == 0
+    # Filter 12: snow ice fraction is below the threshold
+    low_snow_ice = snow_ice_fraction <= sif_max
 
     # Collect quality filters into a single array
     quality_filter = np.stack([
@@ -148,7 +162,7 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None):
         bl_index_exists.flatten(), #9
         bl_index_below_trop.flatten(), # 10
         valid_pixel_area.flatten(), # 11
-        zero_snow_ice.flatten() # 12
+        low_snow_ice.flatten() # 12
     ], axis=1)
 
     # It is easier to interpret the resulting bit array flags if 1 corresponds to bad quality and 0 to good (since all flags at 0 yield an int
@@ -157,7 +171,7 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None):
 
     qf_columns = ['original_trop_amf_invalid', 'original_trop_vcd_invalid', 'trop_index_unknown', 'scattering_weights_bad', 'calculated_trop_amf_invalid',
                   'main_data_quality_above_0', 'high_eff_cloud_fraction', 'high_sza', 'model_bl_vcd_unknown', 'bl_index_unknown', 'bl_index_above_tp', 
-                  'invalid_pixel_area', 'nonzero_snow_ice']
+                  'invalid_pixel_area', 'high_snow_ice']
     
     quality_df = pd.DataFrame(quality_filter_inverted.astype(int), columns=qf_columns, dtype=str)
 
@@ -179,7 +193,10 @@ def set_quality_flags(scan_ds, update_mode="Standard", nonzero_amf_calc=None):
                                                         {
                                                             'description': 'bit flag indicating quality of pixel for update algorithm',
                                                             'bit_positions': np.flip(np.arange(quality_df.shape[1])),
-                                                            'bit_meanings': list(quality_df.columns)
+                                                            'bit_meanings': list(quality_df.columns),
+                                                            'eff_cloud_fraction__upper_cutoff': ecf_max,
+                                                            'solar_zenith_angle__upper_cutoff': sza_max,
+                                                            'snow_ice_fraction__upper_cutoff': sif_max,
                                                         }
     )
 

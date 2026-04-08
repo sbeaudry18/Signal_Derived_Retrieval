@@ -1,13 +1,14 @@
 #### prune_dataset.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2025-10-15
+# Last changed: 2026-03-11
 # Location: Signal_Derived_Retrieval/TEMPO/main/functions
 # Contact: samuel_beaudry@berkeley.edu
 
 ##########################
 
 import xarray as xr
+
 
 def prune_dataset(scan_ds: xr.Dataset, update_modes: tuple, remove_originals=True):
     '''
@@ -42,6 +43,11 @@ def prune_dataset(scan_ds: xr.Dataset, update_modes: tuple, remove_originals=Tru
         vars_to_remove.append('gas_profile')
         vars_to_remove.append('temperature_profile')
         vars_to_remove.append('scattering_weights')
+
+    # SB 2026-03-11: added a check that these variables are actually in the 
+    # dataset so that this function has more utility across different datasets
+    vars_in_ds = list(scan_ds.variables.keys())
+    vars_to_remove = [vr for vr in vars_to_remove if vr in vars_in_ds]
 
     scan_ds = scan_ds.drop_vars(vars_to_remove)
 
