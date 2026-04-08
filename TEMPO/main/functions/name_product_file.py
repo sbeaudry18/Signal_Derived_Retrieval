@@ -23,7 +23,7 @@ def name_product_file(sdr_version, start_time, end_time, scan_num, geo_scope, co
     
     scan_num_pat = re.compile(r'S\d{3}')
     if not scan_num_pat.match(scan_num):
-        raise ValueError('Invalid input for end_time: {}'.format(end_time))
+        raise ValueError('Invalid input for scan_num: {}'.format(scan_num))
 
     product_name = "SDR-TEMPO_NO2_L2_{}_{}_{}_{}_{}".format(
         sdr_version,
