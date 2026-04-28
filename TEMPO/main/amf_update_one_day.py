@@ -1,7 +1,7 @@
 #### amf_update_one_day.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2026-03-27
+# Last changed: 2026-04-28
 # Location: Signal_Derived_Retrieval/TEMPO/main
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -118,7 +118,7 @@ def amf_update_one_day(date_string, TEMPO, collection, sdr_letter, vars_path, co
     # Check if we have already called TEMPO_L2_NO2_on_date and provided the DataFrame with matched files
     if file_df is None:
         # Call TEMPO_L2_NO2_on_date for the provided day
-        file_df = TEMPO_L2_NO2_on_date(date_string, TEMPO, collection, vars_path, full_FOR)
+        file_df = TEMPO_L2_NO2_on_date(date_string, TEMPO, collection, vars_path, day_subdir=False, full_FOR=full_FOR)
 
     elif not isinstance(file_df, pd.DataFrame):
         raise ValueError("'file_df' must be None or pd.DataFrame, not {}".format(type(file_df)))

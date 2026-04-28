@@ -1,7 +1,7 @@
 #### TEMPO_L2_NO2_on_date.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2026-03-27
+# Last changed: 2026-04-28
 # Location: Signal_Derived_Retrieval/TEMPO/main
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -20,7 +20,7 @@ import warnings
 from functions.build_tempo_struct import build_tempo_struct
 from functions.build_geobounds_str import build_geobounds_str
 
-def TEMPO_L2_NO2_on_date(date_string, tempo_location, collection, vars_path, full_FOR=True, intermediate_save_location=None, lonmin=-180, lonmax=180, latmin=-90, latmax=90, replace_existing=False):
+def TEMPO_L2_NO2_on_date(date_string, tempo_location, collection, vars_path, day_subdir=False, full_FOR=True, intermediate_save_location=None, lonmin=-180, lonmax=180, latmin=-90, latmax=90, replace_existing=False):
     '''
     Prepares pickled dictionaries to be read by read_main_single.m or amf_update_one_scan.py
 
@@ -34,6 +34,8 @@ def TEMPO_L2_NO2_on_date(date_string, tempo_location, collection, vars_path, ful
         Version of TEMPO product to use as VXX
     vars_path : str
         Path to csv file containing group assignments for TEMPO variables
+    day_subdir : bool (Optional)
+        Set to True if TEMPO L2 files are further separated into directories for each day
     full_FOR : bool (Optional)
         If True, prepares process for entire field of regard
     intermediate_save_location : str (Optional)
@@ -70,11 +72,14 @@ def TEMPO_L2_NO2_on_date(date_string, tempo_location, collection, vars_path, ful
 
     year_of_interest = date_of_interest.year
     month_of_interest = date_of_interest.month
+    day_of_interest = date_of_interest.day
 
     # We have to check both the selected day and the next because the daylight hours TEMPO measures over North America
     # straddle UTC midnight
     # First UTC Day
     tempo_product_location_month = "{TEMPO}/NO2/L2/{collection}/{yr:04d}/{mo:02d}".format(TEMPO=tempo_location, collection=collection, yr=year_of_interest, mo=month_of_interest)
+    if day_subdir:
+        tempo_product_location_month += "/{day:02d}".format(day=day_of_interest)
     file_list = os.listdir(tempo_product_location_month)
 
     date_pattern = re.compile(r'^TEMPO_NO2_L2_{collection}_{date}T\d{{6}}Z_S\d{{3}}G\d{{2}}\.nc$'.format(collection=collection, date=date_string))
@@ -86,6 +91,8 @@ def TEMPO_L2_NO2_on_date(date_string, tempo_location, collection, vars_path, ful
 
     # Second UTC Day
     tempo_product_location_month = "{TEMPO}/NO2/L2/{collection}/{yr:04d}/{mo:02d}".format(TEMPO=tempo_location, collection=collection, yr=next_date_of_interest.year, mo=next_date_of_interest.month)
+    if day_subdir:
+        tempo_product_location_month += "/{day:02d}".format(day=next_date_of_interest.day)
     file_list = os.listdir(tempo_product_location_month)
 
     next_date_pattern = re.compile(r'^TEMPO_NO2_L2_{collection}_{date}T\d{{6}}Z_S\d{{3}}G\d{{2}}\.nc$'.format(collection=collection, date=next_date_string))
