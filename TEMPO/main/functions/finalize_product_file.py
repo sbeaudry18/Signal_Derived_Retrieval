@@ -1,7 +1,7 @@
 #### finalize_product_file.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2026-03-22
+# Last changed: 2026-06-03
 # Location: Signal_Derived_Retrieval/TEMPO/main
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -138,9 +138,12 @@ def finalize_product_file(processing_dataset, product_dir, sdr_version, scan_num
     vars_to_change_w_sw = ["{}_{}".format(var, sw_mode) for var in vars_to_change]
 
     # Loop through product variables and change to new format
+    scan_ds_var_list = list(scan_ds.variables.keys())
     for i in range(len(vars_to_change)):
-                            # old name             # new name
-        scan_ds = redefine_sdr_vars(scan_ds, vars_to_change_w_sw[i], var_names_sdr[i])
+        # Only redefine those which are actually in scan_ds
+        if vars_to_change_w_sw[i] in scan_ds_var_list:
+                                # old name             # new name
+            scan_ds = redefine_sdr_vars(scan_ds, vars_to_change_w_sw[i], var_names_sdr[i])
 
     # Drop for other sw_modes
     scan_ds = remove_other_sw_modes(scan_ds, vars_to_change)

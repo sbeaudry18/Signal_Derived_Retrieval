@@ -1,7 +1,7 @@
 #### amf_update_one_scan.py ####
 
 # Author: Sam Beaudry
-# Last changed: 2026-03-26
+# Last changed: 2026-06-03
 # Location: Signal_Derived_Retrieval/TEMPO/main
 # Contact: samuel_beaudry@berkeley.edu
 
@@ -949,41 +949,43 @@ def amf_update_one_scan(scan_df, tempo_dir_head, vars_path, constants_path, save
         #### Updated Total AMFs/VCDs ####
         #################################
 
-        for mode in update_modes:
-            # Set the scattering weight variable to use
-            if mode == "Standard":
-                sw_var = 'scattering_weights'
+        calculate_total_column = False
+        if calculate_total_column: # memory intensive
+            for mode in update_modes:
+                # Set the scattering weight variable to use
+                if mode == "Standard":
+                    sw_var = 'scattering_weights'
 
-            else:
-                sw_var = 'ScatteringWeightsIPA_{}'.format(mode)
+                else:
+                    sw_var = 'ScatteringWeightsIPA_{}'.format(mode)
 
-            v = scan_ds['gas_profile_updated_{}'.format(mode)].data # ['mirror_step', 'xtrack', 'iteration', 'swt_level']
-            m = np.expand_dims(scan_ds[sw_var].data, axis=2) # ['mirror_step', 'xtrack', 'iteration', 'swt_level']
-            c = np.expand_dims(scan_ds['TemperatureCorrection'].data, axis=2) # ['mirror_step', 'xtrack', 'iteration', 'swt_level']
+                v = scan_ds['gas_profile_updated_{}'.format(mode)].data # ['mirror_step', 'xtrack', 'iteration', 'swt_level']
+                m = np.expand_dims(scan_ds[sw_var].data, axis=2) # ['mirror_step', 'xtrack', 'iteration', 'swt_level']
+                c = np.expand_dims(scan_ds['TemperatureCorrection'].data, axis=2) # ['mirror_step', 'xtrack', 'iteration', 'swt_level']
 
-            # Invalid values for the prior should be marked by NaNs
-            bad_v = np.any(np.isnan(v), axis=3) # ['mirror_step', 'xtrack', 'iteration']
+                # Invalid values for the prior should be marked by NaNs
+                bad_v = np.any(np.isnan(v), axis=3) # ['mirror_step', 'xtrack', 'iteration']
 
-            amf_total_upd = np.where(bad_v, np.nan, np.sum(v * m * c, axis=3) / np.sum(v, axis=3)) # ['mirror_step', 'xtrack', 'iteration']
-            vcd_total_upd = np.where(bad_v, np.nan, np.expand_dims(scan_ds.fitted_slant_column.data, axis=2) / amf_total_upd )
+                amf_total_upd = np.where(bad_v, np.nan, np.sum(v * m * c, axis=3) / np.sum(v, axis=3)) # ['mirror_step', 'xtrack', 'iteration']
+                vcd_total_upd = np.where(bad_v, np.nan, np.expand_dims(scan_ds.fitted_slant_column.data, axis=2) / amf_total_upd )
 
-            scan_ds['amf_total_updated_{}'.format(mode)] = (
-                                                            ['mirror_step', 'xtrack', 'iteration'],
-                                                            amf_total_upd,
-                                                            {
-                                                                'units': 1,
-                                                                'description': 'updated iterations of total AMF'
-                                                            }
-            )
+                scan_ds['amf_total_updated_{}'.format(mode)] = (
+                                                                ['mirror_step', 'xtrack', 'iteration'],
+                                                                amf_total_upd,
+                                                                {
+                                                                    'units': 1,
+                                                                    'description': 'updated iterations of total AMF'
+                                                                }
+                )
 
-            scan_ds['vertical_column_total_updated_{}'.format(mode)] = (
-                                                                        ['mirror_step', 'xtrack', 'iteration'],
-                                                                        vcd_total_upd,
-                                                                        {
-                                                                            'units': 'molecules/cm^2',
-                                                                            'descritption': 'updated iterations of total VCD'
-                                                                        }
-            )
+                scan_ds['vertical_column_total_updated_{}'.format(mode)] = (
+                                                                            ['mirror_step', 'xtrack', 'iteration'],
+                                                                            vcd_total_upd,
+                                                                            {
+                                                                                'units': 'molecules/cm^2',
+                                                                                'descritption': 'updated iterations of total VCD'
+                                                                            }
+                )
 
         ################
         #### Saving ####
